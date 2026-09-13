@@ -1,0 +1,70 @@
+---
+type: summary
+title: {{ title_yaml }}
+source_file: {{ source_file_yaml }}
+source_date: {{ source_date }}
+file_type: {{ file_type }}
+source_hash: {{ source_hash }}
+entities: [{{ entities_yaml }}]
+topics: {{ topics | tojson if topics else [] }}
+meta_type: {{ meta_type or 'reference' }}
+status_stage: compiled
+generator: pj102-llm-meetingkb-v4.0-refactor
+generated_at: {{ generated_at }}
+---
+
+# 摘要 · {{ source_date }} · {{ topic }}
+
+> [!abstract] 一句话总结
+> {{ one_sentence }}
+
+## 五要素
+
+- **背景**：{{ background }}
+- **问题**：{{ problem }}
+- **方法**：{{ method }}
+- **结果**：{{ outcome }}
+- **启示**：{{ insight }}
+
+{% if quantitative_params %}
+## 关键数字
+
+| 类型 | 数值 | 原文引述 | 发言人 | 置信度 |
+|---|---|---|---|---|
+{% for p in quantitative_params %}
+| {{ p.type }} | {{ p.value }} | {{ p.quote }} | {{ p.speaker }} | {{ p.confidence }} |
+{% endfor %}
+
+{% endif %}
+## 涉及实体
+
+{% if entity_links %}
+{% for l in entity_links %}
+- {{ l }}
+{% endfor %}
+
+{% else %}
+（本源未提取到已注册实体）
+
+{% endif %}
+## 相关页面
+
+{% if meeting_link %}
+- **会议页**：{{ meeting_link }}
+{% endif %}
+{% if scenario_links %}
+{% for s in scenario_links %}
+- **场景页**：{{ s }}
+{% endfor %}
+{% endif %}
+- **源文件**：`{{ source_file }}`（hash `{{ source_hash }}`，L0 原文只读层，见 config/project.yaml source_dir）
+
+## 建议问题
+
+1. {{ source_date }} 这场沟通的背景与核心问题是什么？
+2. 提出了什么方法，达成了哪些共识？
+{% if quantitative_params %}
+3. 会议中出现了哪些关键数字，各自的可信度如何？
+{% else %}
+3. 有哪些对后续工作有指导意义的启示？
+{% endif %}

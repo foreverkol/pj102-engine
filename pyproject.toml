@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pj102-engine"
+version = "2.1.0"
+description = "LLM Wiki compiler engine: 13-step pipeline, 12-dim lint, retrieval stack, MCP tools"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+pj102 = "pj102_engine.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pj102_engine = ["defaults/*.yaml", "defaults/*.example", "defaults/templates/*",
+                "init_template/*"]

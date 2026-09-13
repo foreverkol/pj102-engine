@@ -1,0 +1,57 @@
+# taxonomy.yaml — 三轴受控词表单点配置（v1, 2026-09-09 W4）
+# 设计依据: docs/DETAILED_DESIGN.md §2.2 / REQUIREMENTS_SPEC FR-10
+# 用途: ① s7/s9 提示词受控输出 ② backfill_tags 启发式回填 ③ lint 词表合规检查
+# 规则: 改词表只改本文件, 代码零改动; 严禁页面出现词表外值
+
+version: 1
+
+# ============ Topic 轴（主题域, ≤30 值）============
+topic:
+  values: [ai, finance, industry, science, technology, product, methodology]
+  rules: {max_count_per_page: 3, allow_free_text: false}
+  # 启发式回填关键词映射（小写包含匹配, 标题+正文命中即打标）
+  keywords:
+    ai: [人工智能, 大模型, llm, 智能体, agent, 数字人, gpt, deepseek, minimax, 生成式, ai应用, ai时代, ai工具]
+    finance: [金融, 供应链, 票据, 银行, 融资, 投资, 资产, 变现, 支付, 风控, 征信, 贷款, 保险, 资本, 股权, 信用]
+    industry: [产业, 行业, 制造, 园区, 培训, 课程, 教育, 基地, 供应链上下游, 实体经济, 数字化转型]
+    science: [科学, 研究, 论文, 实验, 原理, 理论]
+    technology: [技术, 架构, 区块链, 链网, 星火, 数据库, 搜索, 检索, bm25, 知识库, 向量, 沙箱, python, 部署, 接口, api, mcp, 模型训练]
+    product: [产品, 官网, 公众号, 小程序, 平台, bp, 商业计划, 路演, 文案, 话术, 客户案例, 功能, 原型]
+    methodology: [方法论, 方法, 框架, 流程, 模式, 策略, 复盘, 步骤, karpathy, wiki, 卡帕西, 蒸馏]
+
+# ============ Type 轴（实体类型, 对齐 schema.org）============
+type:
+  values: [person, org, product, model, paper, tool]
+  # 存量 type → Type 轴映射（页面不改原 type 字段, 轴值另存 type_axis）
+  mapping:
+    meeting: reference      # 会议页无实体类型 → 轴留空
+    judgment: reference
+    concept: tool
+    person: person
+    organization: org
+    scenario: product
+    summary: reference
+    query: reference
+    synthesis: reference
+  rules: {allow_free_text: false}
+
+# ============ Meta 轴（页面性质, 对齐 Karpathy gist 页型, ≤12 值）============
+meta:
+  values: [comparison, timeline, controversy, prediction, tutorial, reference]
+  # 存量页面类型 → Meta 轴默认映射（可被正文特征覆盖: 如判断页含"风险/存疑"→controversy）
+  mapping:
+    meeting: reference
+    judgment: prediction      # 判断本质是对未来的预测/主张
+    concept: reference
+    person: reference
+    organization: reference
+    scenario: reference
+    summary: reference
+    query: reference
+    synthesis: comparison
+  rules: {allow_free_text: false}
+
+# ============ Stance 立场（判断页专用, dispute 检测依赖）============
+stance:
+  values: [support, caution, oppose, mixed]
+  rules: {allow_free_text: false}

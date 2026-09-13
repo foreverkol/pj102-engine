@@ -1,0 +1,48 @@
+# {{PROJECT_NAME}} · 项目元信息 (pj102 init 生成)
+# 请将 {{...}} 占位符替换为你的真实信息(可请 WorkBuddy agent 代填)
+
+project:
+  name: "{{PROJECT_NAME}}"
+  short_name: "{{PROJECT_SHORT}}"
+  description: "{{一句话描述: 这个知识库沉淀什么内容}}"
+  created: "{{TODAY}}"
+  owner: "{{你的称呼}}"
+
+scope:
+  # 源数据目录: 存放录音转写 markdown 文件的文件夹(绝对路径)
+  source_dir: "{{你的源目录绝对路径}}"
+  source_type: "audio_transcript"
+  # 核心人物(对话中最重要的人)
+  core_persons:
+    - name: "{{核心人物A}}"
+      role: "{{角色}}"
+    - name: "{{核心人物B}}"
+      role: "{{角色}}"
+  # 涉及项目关键词(影响实体识别与主题标注)
+  project_keywords:
+    - "{{关键词1}}"
+    - "{{关键词2}}"
+    - "{{关键词3}}"
+
+file_naming:
+  type1_pattern: "^20\\d{6,14}[\\u4e00-\\u9fff].*_原文\\.md$"
+  type1_description: "录音文字(多人会议)"
+  type2_pattern: "^[\\u4e00-\\u9fff]+@[\\d\\s_]+_20\\d{14}.*_原文\\.md$"
+  type2_description: "手机通话录音(2人对谈)"
+
+output_standards:
+  wiki_layout: "three_layer"
+  frontmatter_version: "v7.0"
+  required_fields:
+    - "entity_id"
+    - "canonical_name"
+    - "status_stage"
+    - "value_grade"
+    - "content_hash"
+    - "source_ref"
+    - "quote_orig"
+  quality_grade:
+    A: "0.8+"
+    B: "0.6-0.8"
+    C: "0.4-0.6"
+    D: "0.0-0.4"

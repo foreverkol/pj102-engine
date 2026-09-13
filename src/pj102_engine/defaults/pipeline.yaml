@@ -1,0 +1,49 @@
+# pj102 engine · 实例管线配置 (由 pj102 init 自动安装)
+# 路径无需配置: 全部由实例根目录 (PJ102_PROJECT_ROOT) 自动推导
+# 修改本文件后无需重启, 下次命令生效
+
+llm:
+  provider: "minimax"
+  model: "MiniMax-M3"
+  base_url: "https://api.minimaxi.com"
+  max_tokens: 524288
+  temperature: 0.3
+  timeout_seconds: 300
+  retry_count: 3
+  retry_backoff: 2.0
+  rate_limit_sleep: 0.3
+
+sample_limit: 10
+
+steps:
+  s1_basic:
+    excerpt_length: 1500
+  s2_scene:
+    valid_types: ["external_business", "internal_review", "partner_coordination", "bank_communication", "personal_thinking", "phone_call"]
+  s3_summary:
+    excerpt_length: 3000
+    quantitative_params_count: 9
+  s4_s4:
+    max_facts: 20
+  s6_entity:
+    entity_types: ["person", "organization", "concept", "product", "project"]
+  s10_cognitive:
+    ldamc_dimensions: ["lost", "different", "added", "more", "connected"]
+  s12_wiki:
+    layout: "three_layer"
+    version: "v7.0"
+
+integrations:
+  entity_resolver: {enabled: true}
+  citations: {enabled: true}
+  scenario_extractor: {enabled: true}
+  review_queue: {enabled: true}
+  dispute_detector: {enabled: true}
+  lint_wiki: {enabled: true}
+  daily_incremental: {enabled: true}
+  index_builder: {enabled: true}
+  kb_retriever: {enabled: true, l2_max_tokens: 4096}
+  file_back: {enabled: true}
+  backlink_builder: {enabled: true}
+  concept_merger: {enabled: true}
+  output_renderer: {enabled: true}
