@@ -12,7 +12,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-ENGINE_VERSION = "2.1.0-dist"
+ENGINE_VERSION = "2.2.0-multienv"
 ENGINE_DIR = Path(__file__).resolve().parent
 CODE_DIR = ENGINE_DIR / "code"
 SCRIPTS_DIR = ENGINE_DIR / "scripts"
@@ -90,7 +90,10 @@ def cmd_run(args):
 
 def cmd_ask(args):
     _resolve_instance(args.instance)
-    _run(SCRIPTS_DIR / "run_query.py", [args.question] + args.extra)
+    argv = [args.question]
+    if getattr(args, "stub", False):
+        argv.append("--stub")
+    _run(SCRIPTS_DIR / "run_query.py", argv + args.extra)
 
 
 def cmd_lint(args):
@@ -161,6 +164,8 @@ def main(argv=None):
     p = sub.add_parser("ask", help="检索问答 (L1 实体导航 / L2 综合问答)")
     p.add_argument("--instance", "-i", default=None)
     p.add_argument("question")
+    p.add_argument("--stub", action="store_true",
+                  help="L2 用 stub, 不调 LLM (快速 L1 测试)")
     p.add_argument("extra", nargs="*")
     p.set_defaults(func=cmd_ask)
 

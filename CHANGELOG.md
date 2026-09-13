@@ -3,6 +3,21 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-09-13
+
+一引擎三环境达成（WorkBuddy / codex / hermes 共享 venv + 三隔离实例）。
+
+### 修复
+
+- **CLI `ask` 通道崩溃**：`scripts/run_query.py` 为原项目遗留启动器，引用 `kb_retriever.main()`
+  （引擎版无此导出）导致 `ImportError`——重写为与 MCP `kb_query` 同构的实现
+  （L1 实体卡直答 / L2 综合问答，支持 `--stub` 快速 L1 测试与 LLM 失败优雅降级）；
+  此前冒烟仅覆盖 `--help` 未实跑 ask，由 M 阶段三环境验收暴露。
+
+### 变更
+
+- 引擎版本标识升为 `2.2.0-multienv`（`pj102 version` 可见）。
+
 ## [2.1.0] - 2026-09-12
 
 首个纯净发行版（v2.1.0-dist）。
