@@ -20,7 +20,7 @@ pip install git+https://github.com/<owner>/pj102-engine.git
 **B. 源码安装（开发者）**
 
 ```bash
-git clone https://github.com/<owner>/pj102-engine.git
+git clone https://github.com/foreverkol/pj102-engine.git
 cd pj102-engine && pip install -e .
 ```
 

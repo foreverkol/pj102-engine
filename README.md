@@ -54,7 +54,7 @@ pj102 init 我的知识库
 ### 通道 ② 直接 pip 安装
 
 ```bash
-pip install git+https://github.com/<owner>/pj102-engine.git
+pip install git+https://github.com/foreverkol/pj102-engine.git
 pj102 init 我的知识库
 ```
 
