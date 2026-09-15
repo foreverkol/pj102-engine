@@ -13,6 +13,9 @@
      - Knowledge/Concepts|Scenarios:   命名 {name}.md (冲突加（2）)
      - 正文实体链接 + 同源互链 + Persons/Organizations 主页 callout
      - 旧 rel 链接全库替换 (index.md 及所有引用页)
+  C. v1.4 (F-4, 2026-09-15 D-d): merge_mode 并入规范主页时回并既有 H2 结构
+     (_merge_appended), 不再原样带回 H1+骨架 H2 — 修复 23 页重复同名小节;
+     存量由 scripts/fix_dup_h2_20260915.py 一次性收口。
 
 幂等: 重复运行零操作。CLI: python code/polish_pages.py [--dry-run] [--wiki PATH]
 """
@@ -27,6 +30,76 @@ HASH_RE = re.compile(r"_[0-9a-f]{8,12}(_\d+)?$")   # T1 修复: 兼容 12 位 co
 
 # 实体链接的最小名字长度 (防误链短词)
 _MIN_LEN = {"person": 3, "org": 4, "concept": 4, "scenario": 5}
+
+
+# ---- v1.4 (F-4, 2026-09-15 D-d): 回并既有 H2 结构 ----
+# 旧实现 add 原样带回被并入页的 H1 + 全套骨架 H2, 多次并入同一规范主页后
+# 出现重复同名 H2 (实例实测 23 页: 王老师 5 组×4-6 份骨架)。
+# 现改为: 剥离 H1; 骨架小节并入目标页同名 H2 末尾 (计数后缀 (N)/(N 次出现)
+# 归一化匹配); 无同名小节才降级为 H3 挂在 "### {date} 补充出现" 标记下。
+
+def _h2_norm(title: str) -> str:
+    """H2 标题归一化: 剥离尾部计数后缀 (## 📅 出现会议 (11) ≡ ## 📅 出现会议)"""
+    return re.sub(r"\s*\(\d+(?:\s*次出现)?\)$", "", title.strip())
+
+
+def _split_h2(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """正文按 H2 切分 → (preamble, [(title, body), ...])。
+
+    注: 与本项目其他就地编辑工具同假设 —— 页面正文 code fence 内
+    不出现行首 '## ' 形态 (LLM 生成的结构页满足此约定)。
+    """
+    parts = re.split(r"(?m)^(?=## (?!#))", text)
+    out = []
+    for seg in parts[1:]:
+        lines = seg.split("\n", 1)
+        out.append((lines[0].strip(), lines[1] if len(lines) > 1 else ""))
+    return parts[0], out
+
+
+def _join_h2(pre: str, secs: List[Tuple[str, str]]) -> str:
+    out = pre.rstrip() + "\n\n" if pre.strip() else ""
+    for t, b in secs:
+        out += f"{t}\n{b.rstrip()}\n\n"
+    return out.rstrip() + "\n"
+
+
+def _merge_appended(ct: str, main: str, sec_text: str, mark: str) -> str:
+    """把被并入页正文 (main) 与关联网络小节 (sec_text) 回并进目标页正文 ct。
+
+    同名 H2 (归一化匹配) → 追加到该小节末尾;
+    无名可回并的残留 → 降级为 H3, 挂在 mark 标记之后 (页面尾)。
+    幂等: 由调用方 _mark 守卫保证 (同 source_meeting 只并入一次)。
+    """
+    stripped = re.sub(r"(?m)^# (?!#)[^\n]*$", "", main.rstrip())  # 剥离 H1 行
+    pre, secs = _split_h2(stripped)
+    _, sec_secs = _split_h2(sec_text)
+    secs = secs + sec_secs
+
+    m = re.match(r"^((?:>.*\n|\n)*)---\r?\n.*?\r?\n---\r?\n", ct, re.S)
+    head = ct[:m.end()] if m else ""
+    tail = ct[m.end():] if m else ct
+    tpre, tsecs = _split_h2(tail)
+
+    leftover = []
+    if pre.strip():
+        leftover.append(pre.strip())
+    for title, body in secs:
+        if not title.strip() or not body.strip():
+            continue
+        tgt = next((i for i, (t, _) in enumerate(tsecs)
+                    if _h2_norm(t) == _h2_norm(title)), None)
+        if tgt is not None:
+            t, tb = tsecs[tgt]
+            tsecs[tgt] = (t, tb.rstrip() + "\n\n" + body.strip() + "\n")
+        else:
+            leftover.append(f"### {title.lstrip('#').strip()}\n\n{body.strip()}")
+
+    if leftover:
+        block = "\n\n" + mark + "\n\n" + "\n\n".join(leftover) + "\n"
+        return head + _join_h2(tpre, tsecs).rstrip() + "\n" + block
+    return head + _join_h2(tpre, tsecs)
+
 
 
 def _sanitize(name: str) -> str:
@@ -206,8 +279,6 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
         if merge_mode:
             _sm = sh["source_meeting"]
             _mark = str(_sm) if _sm else f"### {sh['date']} 补充出现"
-            add = (f"\n### {sh['date'] or sh['path'].stem} 补充出现\n\n"
-                   + main.rstrip() + "\n" + "".join(sec))
             if not dry_run:
                 cp = W / (new_rel + ".md")
                 ct = cp.read_text(encoding="utf-8")
@@ -225,7 +296,12 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                             ct = re.sub(r"\n---\n",
                                         f"\nsource_meetings:\n  - {_smq}\n---\n",
                                         ct, count=1)
-                    cp.write_text(ct.rstrip() + "\n" + add + "\n", encoding="utf-8")
+                    # v1.4 (F-4, D-d): 回并既有 H2 结构 — 不再原样带回
+                    # 被并入页的 H1+骨架 H2, 防重复同名小节 (详见 _merge_appended)
+                    ct = _merge_appended(
+                        ct, main, "".join(sec),
+                        mark=f"### {sh['date'] or sh['path'].stem} 补充出现")
+                    cp.write_text(ct, encoding="utf-8")
                     sh["path"].unlink()
             report["entity_merged"] += 1
             report["links_fixed"] += n_ent

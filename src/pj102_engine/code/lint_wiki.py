@@ -92,7 +92,7 @@ def lint_wiki(wiki_root: Path) -> Dict[str, List[str]]:
         "8_required_field_violations": _check_required_fields(md_files),  # v7.0 增强
         "9_tag_violations": _check_tag_violations(md_files),  # W4: 词表合规
         "10_tag_coverage": _check_tag_coverage(md_files),  # W4: 标签覆盖率
-        "11_entity_fragments": _check_entity_fragments(md_files),  # P2: 同名分片
+        "11_entity_fragments": _check_entity_fragments(md_files, wiki_root),  # P2: 同名分片
         "12_content_orphans": _check_content_orphans(md_files),  # T-P5.4: 语义=密度缺口 (可遍历但内容稀薄)
     }
 
@@ -102,12 +102,27 @@ def lint_wiki(wiki_root: Path) -> Dict[str, List[str]]:
 _FRAG_RE = re.compile(r"（\d{4}-\d{2}-\d{2}）$|（\d+）$")
 
 
-def _check_entity_fragments(md_files: List[Path]) -> List[str]:
+def _load_manual_review(wiki_root: Path) -> set:
+    """疑似重名人工审查名单 — 外置为实例数据文件 (v2.2.4, 分叉 #2 清账)。
+
+    读取 <project_root>/system/state/manual_entities.json (字符串数组)。
+    引擎发行版不内置任何实例人名; 文件缺失/损坏时返回空集 (全部按规则判分片)。
+    与 system/state/known_orphans.json 同套路: 代码同构, 数据分离, 实例自维护。
+    """
+    try:
+        p = Path(wiki_root).parent / "system" / "state" / "manual_entities.json"
+        arr = json.loads(p.read_text(encoding="utf-8"))
+        return {str(x).strip() for x in arr if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def _check_entity_fragments(md_files: List[Path], wiki_root: Path = None) -> List[str]:
     """同一人物/机构应只有一个规范页 (一人一页约定, P2 v1.3)。
 
     按去掉日期/(n)后缀的基名归组, 组内页数 >1 即分片 (人工审查组除外)。
     """
-    MANUAL = set()  # 疑似重名人工审查名单(实例可自行维护; 命中组不判分片)
+    MANUAL = _load_manual_review(wiki_root) if wiki_root else set()  # 人工审查名单(实例维护; 命中组不判分片)
     groups = {}
     for f in md_files:
         rel = f.as_posix()

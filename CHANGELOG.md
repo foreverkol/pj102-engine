@@ -3,6 +3,35 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.2.4] - 2026-09-15
+
+分叉清账版：实例侧 4 处热修一次上游 + 实体页并入重复小节根治。**换 4 个文件即可**
+（`code/pipeline.py` / `code/lint_wiki.py` / `code/polish_pages.py` / `scripts/link_orphans.py`，
+另 `scripts/ingest_source.py` 仅加注释），已部署 2.2.0+ 的环境可按文件覆盖升级。
+
+### 修复
+
+- **`pipeline.py mark_processed()` count 冻结 + 重跑非幂等**（分叉 #1）：原实现只 append、
+  从不同步 `count` 元数据，导致 count 永久冻结在最后一次 ingest 运行时的值（实例实测
+  39 vs 实际 43）。现补：同 `content_hash` 旧 ok 条目出栈（重跑幂等，墓碑保留）+
+  `count` 与 ingest 口径同步 + `updated_at` 时间戳。
+- **`polish_pages.py` merge_mode 并入带回整套骨架**（分叉 #4 / D-d）：原实现把被并入页
+  的 H1 + 全套骨架 H2 原样追加进规范主页，多次并入后出现重复同名小节（实例实测 23 页）。
+  现改为**回并既有 H2 结构**：剥离 H1；骨架小节并入目标页同名 H2 末尾（计数后缀
+  `(N)`/`(N 次出现)` 归一化匹配）；无名可并的小节降级 H3 挂在 `### {date} 补充出现`
+  标记下。幂等守卫（source_meeting 检查）不变。
+
+### 变更
+
+- **`lint_wiki.py` 人工审查白名单外置**（分叉 #2）：`MANUAL` 从代码硬编码改为读取
+  `<project_root>/system/state/manual_entities.json`（字符串数组，与 `known_orphans.json`
+  同套路：代码同构、数据分离）。文件缺失时为空集，引擎不内置任何实例人名。
+- **`scripts/link_orphans.py` 上游引擎**（分叉 #3）：真孤儿回链工具（幂等、零 LLM、
+  Synthesis/Queries/Summaries 豁免、`source_meeting → source_ref` 别名回退）首次进入
+  引擎发行版；路径锚点改为 `PJ102_PROJECT_ROOT` 环境变量 / cwd。
+- **`scripts/ingest_source.py` 非递归护栏**：`glob("*.md")` 处加代码注释 —— 严禁改为
+  递归（非递归是"汇总包不入扫描范围"的隐性保护）。
+
 ## [2.2.3] - 2026-09-15
 
 补丁版：修复「同源重跑必产重复摘要页」的污染型缺陷。**只换 `s15_summary_page.py` 一个文件即可**，

@@ -71,14 +71,26 @@ def is_processed(cfg: AppConfig, content_hash: str) -> bool:
 
 def mark_processed(cfg: AppConfig, filename: str, content_hash: str,
                    result: dict) -> None:
-    """记录已处理(用于断点续跑 + daily_incremental 复用)"""
+    """记录已处理(用于断点续跑 + daily_incremental 复用)
+
+    v2.2.4 (2026-09-15, 分叉 #1 清账): 原实现只 append、从不同步 count 元数据,
+    导致 count 永久冻结在最后一次 ingest_source 运行时的值 (实例实测 39 vs 实际 43)。
+    本版同时补重跑幂等 —— 清掉同 content_hash 的旧 ok 条目;
+    墓碑 (skipped_invalid 等) 一律保留, 因 is_processed() 只认 status=="ok",
+    墓碑是"校验规则升级后可重新入队"的刻意设计。
+    """
     state = {"version": "1.0", "processed": []}
     if cfg.paths.processed_state.exists():
         try:
             state = json.loads(cfg.paths.processed_state.read_text(encoding="utf-8"))
         except Exception:
             pass
-    state.setdefault("processed", []).append({
+    proc = state.setdefault("processed", [])
+    # 重跑幂等: 同 content_hash 的旧 ok 条目先出栈 (墓碑保留)
+    proc[:] = [x for x in proc
+               if not (x.get("content_hash") == content_hash
+                       and x.get("status", "ok") == "ok")]
+    proc.append({
         "filename": filename,
         "content_hash": content_hash,
         "processed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -90,6 +102,8 @@ def mark_processed(cfg: AppConfig, filename: str, content_hash: str,
         ),
         "status": "ok",
     })
+    state["count"] = len(proc)  # v2.2.4: 与 ingest_source.py 口径一致 (含墓碑)
+    state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     cfg.paths.processed_state.parent.mkdir(parents=True, exist_ok=True)
     cfg.paths.processed_state.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -195,6 +195,10 @@ def run_ingest(
         return {"error": "source dir not found"}
 
     # 扫描源文件
+    # ⛔ 护栏 (D-27 裁定, 2026-09-15): 严禁把本 glob("*.md") 改为递归 (rglob/**) ——
+    # 非递归是"汇总包/子目录不入扫描范围"的隐性保护: 递归会把与顶层源文件
+    # 内容重叠的 merged 汇总包卷入, 批量制造重复摄入。若确需子目录, 必须先配
+    # content_hash 全局去重并经人工裁决。
     md_files = sorted(source_dir.glob("*.md"))
     log(f"扫描到 {len(md_files)} 个 .md 文件")
 
