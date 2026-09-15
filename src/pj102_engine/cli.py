@@ -12,7 +12,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-ENGINE_VERSION = "2.2.0-multienv"
+ENGINE_VERSION = "2.2.3-s15fix"
 ENGINE_DIR = Path(__file__).resolve().parent
 CODE_DIR = ENGINE_DIR / "code"
 SCRIPTS_DIR = ENGINE_DIR / "scripts"

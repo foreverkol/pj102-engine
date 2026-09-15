@@ -3,6 +3,42 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.2.3] - 2026-09-15
+
+补丁版：修复「同源重跑必产重复摘要页」的污染型缺陷。**只换 `s15_summary_page.py` 一个文件即可**，
+已部署 2.2.0 的环境无需重装（覆盖该文件，或重装本补丁版的 whl / 绿色包）。
+
+### 修复
+
+- **同源重跑累积「（2）」重复摘要页**：`code/steps/s15_summary_page.py` 原先只做
+  `while target.exists(): target = …（n）.md` —— 只判**文件名是否被占用**，从不读旧页的
+  `source_hash`。后果：同一源文件每重跑一次就必然新产出一张 `…（2）`、`…（3）` 页，
+  且重跑产物质量可能**低于**既有版本（实测 2026-09-08：新版 2585B / 8 链 < 旧版 3905B / 15 链，
+  即"重跑倒退"）。
+  现改为**三级命名判定**：
+
+  | 情形 | 判定 | 行为 |
+  |---|---|---|
+  | 目标不存在 | `direct` | 直写 |
+  | 存在且 `source_hash` **相同**（同源重跑） | `same_source` | 渲染后按 `_content_grade` **择优覆盖**（新版不劣于旧版才落地，否则保留既有版本 → `same_source_kept_old`） |
+  | 存在且 `source_hash` **不同**（异源真冲突） | `suffixed` | 沿用既有约定加 `（n）` |
+
+  返回值新增 `naming_decision` 字段，便于批次审计（`system/cache/steps/<hash>/s15.json` 可见）。
+
+  新增 `_content_grade(text) -> (双链数, 五要素已填数, 字节数)` 作为同源择优的排序键。
+
+### 变更
+
+- 引擎版本标识升为 `2.2.3-s15fix`（`pj102 version` 可见）；`pyproject.toml` / `__init__.py`
+  版本号同步（`__init__.py` 此前滞留在 `2.1.0-dist`，本次一并归位）。
+
+### 说明
+
+- 本补丁**不含**以下三项（属"结果不一致/误报"的一致性缺陷，不产生新垃圾页，
+  合并到下一次重构批次处理）：
+  `code/pipeline.py mark_processed()` 状态文件 count 不同步 / `code/lint_wiki.py`
+  实体分片白名单 / `scripts/link_orphans.py` 来源字段别名回退。
+
 ## [2.2.0] - 2026-09-13
 
 一引擎三环境达成（WorkBuddy / codex / hermes 共享 venv + 三隔离实例）。

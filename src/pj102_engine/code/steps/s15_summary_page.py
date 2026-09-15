@@ -178,12 +178,30 @@ def s15_summary_page(state: dict, cfg) -> dict:
     if not isinstance(qp, list):
         qp = []
 
+    # 命名冲突判定 (2026-09-15 修复 D-s15)
+    #   ① 目标不存在              → 直写
+    #   ② 存在且 source_hash 相同 → 同源重跑: 择优覆盖 (渲染后比对, 见下)
+    #   ③ 存在且 source_hash 不同 → 异源真冲突: 沿用既有约定加 （n）
+    # 旧实现只判 target.exists() 就加 （2）, 使"同一源文件重跑"必然产出重复摘要页,
+    # 且重跑产物质量可能低于既有版本 (实测 2026-09-08: 新版 2585B/8 链 < 旧版 3905B/15 链)。
     fname = f"摘要_{source_date}_{topic}.md"
     target = out_dir / fname
-    n = 2
-    while target.exists():  # 同名冲突加 (2), 沿用既有约定
-        target = out_dir / f"摘要_{source_date}_{topic}（{n}）.md"
-        n += 1
+    naming_decision = "direct"
+    prev_grade = None
+    if target.exists():
+        prev_text = target.read_text(encoding="utf-8", errors="ignore")
+        prev_fm = _frontmatter_of(prev_text)
+        prev_hash = (prev_fm.get("source_hash")
+                     or prev_fm.get("content_hash") or "").strip()
+        if prev_hash and prev_hash == content_hash:
+            naming_decision = "same_source"      # 待渲染后择优
+            prev_grade = _content_grade(prev_text)
+        else:
+            n = 2
+            while target.exists():  # 同名冲突加 (2), 沿用既有约定
+                target = out_dir / f"摘要_{source_date}_{topic}（{n}）.md"
+                n += 1
+            naming_decision = "suffixed"
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)),
                       undefined=StrictUndefined,
@@ -213,14 +231,38 @@ def s15_summary_page(state: dict, cfg) -> dict:
         meeting_link=meeting_link,
         scenario_links=scenario_links,
     )
-    target.write_text(rendered, encoding="utf-8")
+    if naming_decision == "same_source":
+        # 同源重跑: 择优覆盖 —— 新版不劣于旧版才落地, 否则保留既有版本 (防"重跑倒退")
+        if _content_grade(rendered) >= prev_grade:
+            target.write_text(rendered, encoding="utf-8")
+            naming_decision = "same_source_overwritten"
+        else:
+            naming_decision = "same_source_kept_old"
+    else:
+        target.write_text(rendered, encoding="utf-8")
     return {
         "pages": [str(target)],
         "page": target.name,
         "entities": len(entity_links),
         "meeting_linked": bool(meeting_link),
         "scenarios": len(scenario_links),
+        "naming_decision": naming_decision,
     }
+
+
+def _content_grade(text: str) -> tuple:
+    """内容完备度三元组 (双链数, 已填要素数, 字节数)。
+
+    仅用于**同源重跑**的择优覆盖判定 (D-s15, 2026-09-15)。排序优先级:
+      双链数 > 五要素已填数 > 字节数; 完全相等时视为平局, 由调用方决定。
+    """
+    links = len(re.findall(r"\[\[", text))
+    filled = 0
+    for k in ("背景", "问题", "方法", "结果", "启示"):
+        m = re.search(r"\*\*%s\*\*：\s*(\S+)" % k, text)
+        if m and "未提取" not in m.group(1):
+            filled += 1
+    return (links, filled, len(text.encode("utf-8")))
 
 
 def _title_from_filename(filename: str) -> str:
