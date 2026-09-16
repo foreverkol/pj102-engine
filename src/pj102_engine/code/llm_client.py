@@ -56,32 +56,60 @@ class LLMClient:
         }
         self.model = self.models.get(provider, "mock")
 
+    # D-51: 单次 read 超时 / 单次 call 总时限（可由环境变量覆盖）
+    REQ_TIMEOUT = int(os.environ.get("PJ102_LLM_TIMEOUT", "180"))
+    TOTAL_TIMEOUT = int(os.environ.get("PJ102_LLM_TOTAL_TIMEOUT", "600"))
+
     def call(self, prompt: str, system: str = "", max_tokens: int = 524288, max_retries: int = 4) -> str:
         """调用 LLM（带重试）
+
         v4.1: max_retries 3→4, 超时 60→300s(thinking 模型需更长思考时间)
+        D-51: 重试**全程可观测**。原实现在 `urlopen` 内阻塞期间**没有任何输出**，
+          叠加 300s 单次超时 → 最长 20 分钟**静默黑洞**（补跑三轮均表现为
+          "停在 s7、无 traceback、无 FAIL"；实测进程累计 CPU 仅 0.09s
+          ⇒ 阻塞在 socket 等待而非计算，由此定性）。现在：
+            · 每轮**开始前**写一行（attempt / prompt 长度 / 单次超时）
+            · 每轮**结束**写一行（耗时 / 返回长度或异常类型）
+            · `TOTAL_TIMEOUT` 兜底，超出立即放弃
         """
+        t_all = time.time()
         for attempt in range(max_retries):
+            t0 = time.time()
+            print("[llm] attempt %d/%d provider=%s prompt=%d字 timeout=%ds 已用%.0fs"
+                  % (attempt + 1, max_retries, self.provider, len(prompt),
+                     self.REQ_TIMEOUT, time.time() - t_all), flush=True)
+            if time.time() - t_all > self.TOTAL_TIMEOUT:
+                print("[llm] 总时限 %ds 已到，放弃（已用 %.0fs）"
+                      % (self.TOTAL_TIMEOUT, time.time() - t_all), flush=True)
+                return ""
             try:
                 if self.provider == "minimax":
-                    return self._call_minimax(prompt, system, max_tokens)
+                    r = self._call_minimax(prompt, system, max_tokens)
                 elif self.provider == "deepseek":
-                    return self._call_deepseek(prompt, system, max_tokens)
+                    r = self._call_deepseek(prompt, system, max_tokens)
                 elif self.provider == "openai":
-                    return self._call_openai(prompt, system, max_tokens)
+                    r = self._call_openai(prompt, system, max_tokens)
                 elif self.provider == "anthropic":
-                    return self._call_anthropic(prompt, system, max_tokens)
+                    r = self._call_anthropic(prompt, system, max_tokens)
                 else:
-                    return self._mock_response()
+                    r = self._mock_response()
+                print("[llm] attempt %d 完成：返回 %d 字，耗时 %.0fs"
+                      % (attempt + 1, len(r or ""), time.time() - t0), flush=True)
+                return r
             except urllib.error.HTTPError as e:
+                print("[llm] attempt %d HTTPError %s（耗时 %.0fs）"
+                      % (attempt + 1, e.code, time.time() - t0), flush=True)
                 if e.code == 429 and attempt < max_retries - 1:
                     wait = 2 ** attempt
-                    print(f"WARN  限流，等待 {wait}s 后重试...")
+                    print(f"WARN  限流，等待 {wait}s 后重试...", flush=True)
                     time.sleep(wait)
                 else:
-                    print(f"WARN  LLM 调用失败 (HTTP {e.code}): {e}")
+                    print(f"WARN  LLM 调用失败 (HTTP {e.code}): {e}", flush=True)
                     return ""
             except Exception as e:
-                print(f"WARN  LLM 调用异常: {e}")
+                print("[llm] attempt %d 异常 %s: %s（耗时 %.0fs）"
+                      % (attempt + 1, type(e).__name__, e, time.time() - t0), flush=True)
+                print(f"WARN  LLM 调用异常: {e}", flush=True)
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                 else:
@@ -148,8 +176,11 @@ class LLMClient:
         # 注: urllib.request.urlopen 只接受单一 timeout 值
         # 不用 socket.setdefaulttimeout, 避免和 urllib 内部超时机制冲突
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            print("[llm] → POST %s（单值超时 %ds）"
+                  % (getattr(req, "full_url", "?").split("?")[0], self.REQ_TIMEOUT), flush=True)
+            resp = urllib.request.urlopen(req, timeout=self.REQ_TIMEOUT)
             _heartbeat("sse_connected")
+            print("[llm] ← 已建连，开始读 SSE", flush=True)
             for raw_line in resp:
                 # L4: 持续心跳
                 total_bytes += len(raw_line)
@@ -280,7 +311,7 @@ class LLMClient:
                 "Authorization": f"Bearer {self.deepseek_key}"
             },
         )
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=self.REQ_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"]
 
@@ -304,7 +335,7 @@ class LLMClient:
                 "Authorization": f"Bearer {self.openai_key}"
             },
         )
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=self.REQ_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"]
 
@@ -326,7 +357,7 @@ class LLMClient:
                 "anthropic-version": "2023-06-01"
             },
         )
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=self.REQ_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data["content"][0]["text"]
 

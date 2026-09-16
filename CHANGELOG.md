@@ -3,6 +3,70 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.4.0] - 2026-09-16
+
+**backlink 归属修复 + LLM 调用可观测性 + 引擎测试体系建立**。
+本次上游把实例侧 D-44 / D-51 / D-52 的引擎级缺陷一次修完，并首次为引擎仓
+补上**布局无关**的回归测试（17 → **85 passed**）。
+
+### 修复
+
+- **`code/backlink_builder.py`（D-52，四处真缺陷）**
+  1. **glob 元字符**：`glob(f"*{entity_name}*.md")` 把实体名里的 `(` `)` `[` `]`
+     当模式解释 ⇒ `千问(Qwen)` / `难度(原南都)` / `王总(人民王总)` 一类实体页
+     **永远收不到 backlinks**（实测单页 backlinks 归零、缩水 44.5%）。
+     改为纯子串匹配 `_find_by_substr`，语义等价且无元字符风险。
+  2. **只写首个匹配页**（D-44）：`entity_id` 对应多页时（T2 时间分页
+     `X（2023-09-07）` / `X（2025-05-29）`），第一页被反复重建、
+     **其余页 backlinks 永远停在旧值**（表现为 `13_stale_backlinks` 僵尸条目）。
+     新增 `find_all_wiki_files_for_entity()` 让同族每页都获得 backlinks。
+  3. **归属错误 + 计数虚高**：子串匹配会让**一个页被多个实体争抢**
+     （实测 20 页，如 `阿里千问办公.md` ← `阿里` / `千问` / `阿里千问办公`）。
+     页的 backlinks 由「最后写入者」决定 ⇒ **挂错对象**；且每次运行都重写该页，
+     即使内容已收敛仍稳定报「N 个文件更新」，**幂等性无法用计数验证**。
+     新增 **`build_entity_file_map()`**：按特异性 **P1 精确同名 > P2 T2 时间分页族
+     > P3 子串兜底（最短优先）** 一次性分配，**一个文件只归属一个实体**。
+  4. **非幂等（拼接多一个 `\n`）**：`parse_frontmatter_and_body` 用
+     `content.split("---", 2)`，故 `body` **自身以 `"\n"` 开头**；
+     原拼接 `f"---\n{fm}---\n{body}"` 每次重建都在正文前**多累积一个空行**。
+     正确拼法为 `f"---\n{fm}---{body}"`。修复后连跑三次 = **0 / 0 / 0 变更**。
+  另：`load_entity_types()` 一次性读入 `canonical_name → entity_type`
+  （原实现**每个实体**都全量 `json.loads` 一遍 registry）。
+
+- **`code/llm_client.py`（D-51）**：调用**全程可观测**。
+  原实现在 `urlopen` 阻塞期间零输出，叠加 300s 单值超时 × `max_retries=4`
+  ⇒ 最长 20 分钟**静默黑洞**（补跑表现为"停在 s7、无 traceback、无 FAIL"，
+  实测进程累计 CPU 仅 0.09s ⇒ 阻塞在 socket 等待而非计算）。
+  现每轮 attempt 开始/结束各写一行，并加 `TOTAL_TIMEOUT` 总时限兜底；
+  单次超时改为 `REQ_TIMEOUT`（默认 180s，环境变量 `PJ102_LLM_TIMEOUT` 可覆盖）。
+
+### 新增
+
+- **`code/lint_cache.py`**：缓存体检 4 维 —— C1 完整度 / C2 有效性（含元话语）/
+  C3 s3 哨兵 / C4 摘要副本。与 `lint_wiki` 13 维合成 **17 维**口径。
+- **`code/speaker_norm.py`**：署名规范化 T1（剥离转写标签前缀）/
+  T2（多署名拆分）/ T3（白名单规范化）。**三护栏缺一即错**：双链掩码、
+  **转述护栏**（`X转述Y` 宁可残留也不归错人）、并列不猜。
+  ⚠ 引擎侧 `_DEFAULT_CANONICAL` **刻意置空** —— 白名单是实例数据，
+  由 `config/speaker_alias.json` 提供；引擎只做 T1/T2。
+
+### 测试
+
+- 新增 `tests/test_backlink_entity_lookup.py`（12 项）：glob 元字符回归、
+  归属唯一性不变量（**任何页不得同时归属两个实体**）、P1 优先于 P3、
+  T2 族整族归属、子串兜底取最短、源码护栏（禁止再把实体名拼进 glob 模式）。
+- 引擎测试集**只收布局无关用例**：实例专属测试（依赖 `config/*.json`、
+  实例 `scripts/`、实例路径）**不上游**，留在实例仓。
+- 累计 **85 passed**。
+
+### 已知遗留（v2.5.0）
+
+- 部分引擎文件的 **docstring 仍含实例实体名**（`asr_alias` / `entity_alias_guard` /
+  `entity_resolver` / `fidelity_gate` / `lint_wiki` / `speaker_norm`）。
+  仅注释层，不影响行为，计划统一中性化。
+- 实例侧 `output_renderer` / `index_builder` / `concept_merger` / `file_back` 等
+  与引擎差异较大（数百至近千行），需**逐块 cherry-pick** 评估，不在本次载荷内。
+
 ## [2.3.0] - 2026-09-16
 
 实体图谱能力上游版：**4 个引擎级新模块 + 3 处接线 + 标尺 15 维**。
