@@ -94,7 +94,128 @@ def lint_wiki(wiki_root: Path) -> Dict[str, List[str]]:
         "10_tag_coverage": _check_tag_coverage(md_files),  # W4: 标签覆盖率
         "11_entity_fragments": _check_entity_fragments(md_files, wiki_root),  # P2: 同名分片
         "12_content_orphans": _check_content_orphans(md_files),  # T-P5.4: 语义=密度缺口 (可遍历但内容稀薄)
+        "13_stale_backlinks": _check_stale_backlinks(wiki_root),  # D-32: 僵尸反向链接 (裸路径指向已归档/改名页)
+        "14_dup_h2": _check_dup_h2(md_files),  # D-42: 同名 H2 重复 (合并类操作的盲区)
+        "15_multi_page_entity": _check_multi_page_entity(md_files, wiki_root),  # D-43: 同 entity_id 多页
     }
+
+
+# ============ 维度 14: dup_h2 (D-42 接线 2026-09-16) ============
+
+
+def _check_dup_h2(md_files: List[Path]) -> List[str]:
+    """实体页正文**同名 H2 重复** —— 合并类操作的盲区维度。
+
+    为什么单独成维
+    --------------
+    D-32 / D-40 的合并装置把被并页的**全套骨架 H2**（`🏢 机构信息` / `📅 出现会议` /
+    `📑 元信息` …）原样追加进规范主页 → 页面出现**重复同名小节**。
+    而既有 13 维**无一覆盖**：`2_dead_links` 只数 `[[双链]]`，`11_entity_fragments`
+    只按页名基名判分片。（实测 2026-09-16：12 页中招、全部源于合并，
+    标尺却全程显示"零回归" → 假阴性。）
+
+    判据与 `polish_pages._h2_norm` **同源**：剥离尾部计数后缀 `(N)` / `(N 次出现)`
+    —— 即 `## 📅 出现会议 (11)` 与 `## 📅 出现会议` 视为同名。
+    可见性修复走 `scripts/fix_dup_h2_20260915.py`。
+    """
+    try:
+        from polish_pages import _h2_norm                      # 一处实现
+    except Exception:                                          # 引擎目录未在 path 上
+        def _h2_norm(t: str) -> str:
+            return re.sub(r"\s*\(\d+(?:\s*次出现)?\)$", "", t.strip())
+
+    out = []
+    for f in md_files:
+        try:
+            body = _strip_frontmatter(f.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        h2 = [ln.strip() for ln in body.split("\n") if re.match(r"^## (?!#)", ln.strip())]
+        cnt: dict = {}
+        for t in h2:
+            k = _h2_norm(t)
+            cnt[k] = cnt.get(k, 0) + 1
+        dup = {k: n for k, n in cnt.items() if n > 1}
+        if dup:
+            out.append(f"{f.as_posix()}: "
+                       + ", ".join(f"{k} ×{n}" for k, n in sorted(dup.items())))
+    return out
+
+
+# ============ 维度 15: multi_page_entity (D-43 接线 2026-09-16) ============
+
+
+def _load_known_multi_page(wiki_root: Path = None) -> set:
+    """同 id 多页的**豁免台账**（实例数据外置，同 `known_orphans.json` 套路）。
+
+    读取 <project_root>/system/state/known_multi_page_entities.json（字符串数组，
+    元素为 `entity_id`）。**只有"刻意设计"的族才可入册** —— 当前 T2 时间分页
+    尚未入册（仍属待裁决缺陷，须持续暴露）。引擎发行版不内置任何实例数据。
+    """
+    if not wiki_root:
+        return set()
+    try:
+        p = Path(wiki_root).parent / "system" / "state" / "known_multi_page_entities.json"
+        return {str(x).strip() for x in json.loads(p.read_text(encoding="utf-8"))
+                if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def _check_multi_page_entity(md_files: List[Path], wiki_root: Path = None) -> List[str]:
+    """**同一 `entity_id` 对应多张实体页** —— 引擎已认定同实体，wiki 却仍是多页。
+
+    为什么单独成维
+    --------------
+    `entity_id` 是引擎级身份权威锚点；同 id 多页意味着**页面层与身份层脱钩**：
+    引用会被分散到多页、backlinks 各记一半、读者看到的是同一个人的几个切片。
+    既有 13 维同样无覆盖（`11_entity_fragments` 只在**页名基名**相同才报）。
+
+    与 `11_entity_fragments` 的分工
+      · 11 维：**页名基名相同** → 抓"命名分片"（`X` / `X_abc123` / `X（2024-01-01）`）
+      · 15 维：**页名完全不同但 id 相同** → 抓"身份脱钩"（`千问(Qwen)` / `阿里千问办公`）
+    二者互补，可同时命中。
+
+    豁免：`known_multi_page_entities.json`（仅收录**刻意设计**的族，如 T2 时间分页）。
+    """
+    known = _load_known_multi_page(wiki_root)
+    groups: dict = {}
+    for f in md_files:
+        rel = f.as_posix()
+        if "/Entities/" not in rel:
+            continue
+        fm = _parse_frontmatter(f)
+        eid = str(fm.get("entity_id") or "").strip()
+        if not eid or eid in known:
+            continue
+        groups.setdefault(eid, []).append(f.stem)
+    out = []
+    for eid, pages in sorted(groups.items()):
+        if len(pages) > 1:
+            out.append(f"{eid}: {len(pages)} 页 " + ", ".join(sorted(pages)))
+    return out
+
+
+# ============ 维度 13: stale_backlinks (D-32 接线 2026-09-16) ============
+
+
+def _check_stale_backlinks(wiki_root: Path) -> List[str]:
+    """backlinks 裸路径指向不存在页面 —— **`2_dead_links` 的盲区**。
+
+    为什么单独成维
+    --------------
+    合并/改名时，别的页 frontmatter 里 `backlinks:` 的条目是**裸相对路径**
+    （`- Entities/Persons/王老师本人.md`），既不是 `[[双链]]` 也不带显示名，
+    因此 `2_dead_links` **一条都抓不到**。实测 D-38/D-40 历轮累积 **311 条**
+    僵尸条目，标尺全程显示"零回归"。
+
+    计数的目标是"指向已不存在页面"的条目本身（不是宿主页），便于直接定位修复。
+    """
+    try:
+        from ref_rewrite import stale_backlinks
+    except Exception:                                  # 引擎目录未在 path 上
+        return []
+    return stale_backlinks(wiki_root)
 
 
 # ============ 维度 11: entity_fragments (P2 T-P2.2) ============

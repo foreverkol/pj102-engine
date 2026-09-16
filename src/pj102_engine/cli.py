@@ -12,7 +12,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-ENGINE_VERSION = "2.2.4"
+ENGINE_VERSION = "2.3.0"
 ENGINE_DIR = Path(__file__).resolve().parent
 CODE_DIR = ENGINE_DIR / "code"
 SCRIPTS_DIR = ENGINE_DIR / "scripts"
@@ -169,7 +169,7 @@ def main(argv=None):
     p.add_argument("extra", nargs="*")
     p.set_defaults(func=cmd_ask)
 
-    p = sub.add_parser("lint", help="12 维质量巡检")
+    p = sub.add_parser("lint", help="15 维质量巡检")
     p.add_argument("--instance", "-i", default=None)
     p.add_argument("extra", nargs="*")
     p.set_defaults(func=cmd_lint)

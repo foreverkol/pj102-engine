@@ -410,7 +410,7 @@ meta_type: {state.get('s9', {}).get('meta_type', 'reference')}
 
     out_file = cfg.paths.wiki_meetings / f"meeting_{date}_{content_hash}.md"
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text(md, encoding="utf-8")
+    out_file.write_text(md, encoding="utf-8", newline="\n")
     return str(out_file)
 
 
@@ -437,14 +437,21 @@ def s12_write_persons(state: Dict, cfg: AppConfig) -> List[str]:
         if not name:
             continue
 
-        safe_name = _safe_filename(name)
+        # ⚠ D-40（2026-09-16）：页名与 frontmatter `name` 必须绑定 **canonical_name**。
+        # 为什么：polish_pages 以 `name` 判定"是否同一实体"，若仍写 s6 原始名，
+        # 同一 entity_id 会因各次称法不同（海塑胶 / 海数交 / 海墅所）而裂成多页
+        # —— 这正是 wiki 出现 20 组"同 id 多页"的直接成因。
+        canonical_name = person.get("canonical_name") or name
+        display = canonical_name
+        safe_name = _safe_filename(display)
         entity_id = person.get("entity_id", "")
-        canonical_name = person.get("canonical_name", name)
-        aliases = person.get("aliases", [])
+        aliases = list(person.get("aliases", []) or [])
+        if name and name != display and name not in aliases:
+            aliases = [name] + aliases        # 本次称法降为别名，保留溯源
 
         md = f"""---
 type: person
-name: {_yq(name)}
+name: {_yq(display)}
 canonical_name: {_yq(canonical_name)}
 entity_id: {_yq(entity_id)}
 date: {date}
@@ -463,12 +470,13 @@ topics: {state.get('s9', {}).get('topics', [])}
 meta_type: reference
 ---
 
-# {name}
+# {display}
 
 ## 👤 人物信息
 
-- **姓名**: {name}
+- **姓名**: {display}
 - **规范名**: {canonical_name}
+- **本次称法**: {name}
 - **实体编号**: {entity_id or '待分配'}
 - **角色/职位**: {person.get('role', 'N/A')}
 - **所属机构**: {person.get('org', 'N/A')}
@@ -533,7 +541,7 @@ meta_type: reference
 
         out_file = cfg.paths.wiki_persons / f"person_{safe_name}_{content_hash[:8]}.md"
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(md, encoding="utf-8")
+        out_file.write_text(md, encoding="utf-8", newline="\n")
         written.append(str(out_file))
 
     return written
@@ -562,20 +570,27 @@ def s12_write_organizations(state: Dict, cfg: AppConfig) -> List[str]:
         if not name:
             continue
 
-        safe_name = _safe_filename(name)
+        # ⚠ D-40（2026-09-16）：同 persons —— 页名与 frontmatter `name` 绑定
+        # canonical_name，否则 polish_pages 会按 s6 原始名把同一 entity_id 裂成多页。
+        canonical_name = org.get("canonical_name") or name
+        display = canonical_name
+        safe_name = _safe_filename(display)
         entity_id = org.get("entity_id", "")
         eid_suffix = entity_id.split("_")[1][:8] if entity_id else content_hash[:8]
+        aliases = list(org.get("aliases", []) or [])
+        if name and name != display and name not in aliases:
+            aliases = [name] + aliases
 
         md = f"""---
 type: organization
-name: {_yq(name)}
-canonical_name: {_yq(name)}
+name: {_yq(display)}
+canonical_name: {_yq(canonical_name)}
 entity_id: {_yq(entity_id)}
 date: {date}
 org_type: {_yq(org.get('type', ''))}
 business_model: {_yq(org.get('business_model', ''))}
 cooperation_status: {_yq(org.get('cooperation_status', ''))}
-aliases: {org.get('aliases', [])}
+aliases: {aliases}
 source_meeting: {source}
 source_hash: {content_hash}
 generated_at: {now}
@@ -587,18 +602,19 @@ topics: {state.get('s9', {}).get('topics', [])}
 meta_type: reference
 ---
 
-# {name}
+# {display}
 
 ## 🏢 机构信息
 
-- **规范名**: {name}
+- **规范名**: {canonical_name}
+- **本次称法**: {name}
 - **实体编号**: {entity_id or '待分配'}
 - **机构类型**: {org.get('type', 'N/A')}
 - **业务模式**: {org.get('business_model', 'N/A')}
 - **合作状态**: {org.get('cooperation_status', 'N/A')}
 """
-        if org.get("aliases"):
-            md += f"- **别名**: {', '.join(org['aliases'])}\n"
+        if aliases:
+            md += f"- **别名**: {', '.join(aliases)}\n"
 
         if org.get("quote_orig"):
             md += f"\n### 原文引用\n> `{org['quote_orig']}`\n"
@@ -617,7 +633,7 @@ meta_type: reference
 """
         out_file = cfg.paths.wiki_organizations / f"org_{safe_name}_{eid_suffix}.md"
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(md, encoding="utf-8")
+        out_file.write_text(md, encoding="utf-8", newline="\n")
         written.append(str(out_file))
 
     return written
@@ -706,7 +722,7 @@ meta_type: reference
 
         out_file = cfg.paths.wiki_concepts / f"concept_{safe_name}_{content_hash[:8]}.md"
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(md, encoding="utf-8")
+        out_file.write_text(md, encoding="utf-8", newline="\n")
         written.append(str(out_file))
 
     return written
@@ -811,7 +827,7 @@ meta_type: prediction
 
         out_file = cfg.paths.wiki_judgments / f"judgment_{date}_{content_hash[:8]}_{i}.md"
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(md, encoding="utf-8")
+        out_file.write_text(md, encoding="utf-8", newline="\n")
         written.append(str(out_file))
 
     return written
@@ -894,7 +910,7 @@ meta_type: reference
 
     out_file = cfg.paths.wiki_comparisons / f"comparison_{date}_{content_hash[:8]}.md"
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text(md, encoding="utf-8")
+    out_file.write_text(md, encoding="utf-8", newline="\n")
     written.append(str(out_file))
 
     return written

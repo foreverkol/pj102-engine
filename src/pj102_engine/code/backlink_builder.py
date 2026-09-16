@@ -184,7 +184,7 @@ def build_backlinks(cfg: AppConfig = None) -> dict:
         new_content = f"---\n{new_fm}---\n{body}"
 
         if new_content != content:
-            wiki_file.write_text(new_content, encoding="utf-8")
+            wiki_file.write_text(new_content, encoding="utf-8", newline="\n")
             backlinks_added += 1
 
     top_entities.sort(key=lambda x: -x[1])

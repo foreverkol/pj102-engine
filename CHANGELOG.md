@@ -3,6 +3,60 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.3.0] - 2026-09-16
+
+实体图谱能力上游版：**4 个引擎级新模块 + 3 处接线 + 标尺 15 维**。
+把实例侧 D-32 / D-38 / D-39 / D-40 / D-42 的全部引擎级能力一次上游，
+并补齐 2.2.4 未覆盖文件的 **LF 行尾**写回侧修复。
+
+### 新增
+
+- **`code/entity_alias_guard.py`**（D-38/39）：实体别名护栏 —— 弱标识判定
+  （泛化称呼 / 源稿口条 / 电话号码 / 单字姓 / 带注解 …）、`split_aliases()`
+  强弱别名分离、`strong_aliases()`、`is_junk_entity_name()`（机器标签拦截）、
+  **`colliding_aliases()`（别名自污染闸）**：别名若等于**另一实体的
+  `canonical_name`** 一律剔除（canonical 具"指名性"）。**纯规则、零实例数据。**
+- **`code/asr_alias.py`**（D-40）：ASR 音近错听映射装载器（`map()` 精确匹配、
+  不做子串；`map_all()` / `group_of()` / `allows_cross_type()`）。
+  错字是**源稿固有属性**，LLM 无法自纠 → 必须在 resolver 出口映射一次。
+  配置外置 `config/asr_alias.json`，缺失即降级空表（引擎可在无该配置的环境跑通）。
+- **`code/ref_rewrite.py`**（D-32）：**四形态**引用改写器 —— ①全路径双链
+  ②短名双链 ③显示名 ④`backlinks` 裸路径（形态 4 **整行锚定**防误伤散文）+
+  `stale_backlinks()`。⚠ 铁律：必须用完整目标边界 `(?=[\]|#])`，禁裸 `replace`
+  （实测 `深度` 是 `深度数科` 前缀 → 死链 10 → 68）。
+  `rewrite_wikilinks(..., dry_run=True)` **只统计不落盘**。
+- **`code/fidelity_gate.py`**：摘要忠实度门（F1 关键数字行数／F2 署名噪声／
+  F3 双链／F4 字节缩水／F5 泛指词入实体表），退出码 1 = FAIL。
+
+### 修复
+
+- **LF 行尾写回侧补齐**（D-34 遗留）：`steps/s12_wiki.py`(6) / `polish_pages.py`(5) /
+  `backlink_builder.py`(1) / `entity_resolver.py` 的 `write_text` 全部补
+  `newline="\n"` —— Windows 下不指定会把 `\n` 翻译为 `\r\n`，**重新引入 CRLF**。
+- **`entity_resolver._find()` 两阶段化**（D-38/39 实体黑洞根治）：原实现把
+  canonical 匹配与 alias 命中放在**同一循环**，返回值**取决于 registry 遍历顺序**
+  （同一名字既是他者 canonical、又出现在本者 aliases → 谁排前归谁，不确定）。
+  现改：阶段 1 `canonical_name` 精确优先；阶段 2 仅**强 alias** 才归并。
+  update 分支只并入强 alias（弱标识另存 `weak_aliases`，仅供展示）。
+- **`steps/s12_wiki.py` 页名绑定 `canonical_name`**（D-40）：原实现 `name` 写 s6
+  原始名，而 `polish_pages` 按 `name` 判同源 → 同一 `entity_id` 因称法不同裂成多页
+  （实例实测 20 组「同 id 多页」）。现 `name`／文件名／H1 一律取 `canonical_name`，
+  本次称法降为 alias 保留溯源；orgs 同步。
+
+### 变更
+
+- **`lint_wiki` 13 → 15 维**：
+  - `14_dup_h2` —— 同名 H2 重复（判据与 `polish_pages._h2_norm` 同源，
+    剥离尾部计数后缀 `(N)`／`(N 次出现)`）。合并类操作的**盲区**：
+    合并天然产生重复同名小节（实例实测 12 页），既有 13 维无一覆盖
+    → 标尺「零回归」是**假阴性**。
+  - `15_multi_page_entity` —— 同 `entity_id` 多页（页面层与身份层脱钩）。
+    与 `11_entity_fragments` 分工：11 维按**页名基名**抓命名分片；
+    15 维按**页名完全不同但 id 相同**抓身份脱钩。二者互补、可同时命中。
+    豁免台账 `system/state/known_multi_page_entities.json`（仅收录刻意设计者，
+    缺失即空集 —— 引擎发行版不内置实例数据）。
+  - 配套标尺 `scripts/baseline_check.py` 由 17 维 → **19 维**。
+
 ## [2.2.4] - 2026-09-15
 
 分叉清账版：实例侧 4 处热修一次上游 + 实体页并入重复小节根治。**换 4 个文件即可**

@@ -2,7 +2,11 @@
 import os, sys, time
 
 # 从 hermes .env 加载 key
-with open("~//.hermes/.env", encoding="utf-8-sig") as f:
+# ⚠ 2026-09-16 修: `~` 字面量**不会被 open() 展开**，且原路径写成 `~//.hermes/.env`
+#   在 pytest 收集阶段即 FileNotFoundError → 整个 tests/ 无法收集。
+#   本文件是**人工诊断脚本**（非自动化测试），已移入 tests/_manual/ 不参与收集。
+with open(os.path.join(os.path.expanduser("~"), ".hermes", ".env"),
+          encoding="utf-8-sig") as f:
     for line in f:
         line = line.strip()
         if "=" in line and not line.startswith("#"):

@@ -301,7 +301,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                     ct = _merge_appended(
                         ct, main, "".join(sec),
                         mark=f"### {sh['date'] or sh['path'].stem} 补充出现")
-                    cp.write_text(ct, encoding="utf-8")
+                    cp.write_text(ct, encoding="utf-8", newline="\n")
                     sh["path"].unlink()
             report["entity_merged"] += 1
             report["links_fixed"] += n_ent
@@ -325,7 +325,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                    + main.rstrip() + "\n" + meta.rstrip() + "\n"
                    + "".join(sec))
         if not dry_run:
-            (W / (new_rel + ".md")).write_text(out_txt, encoding="utf-8")
+            (W / (new_rel + ".md")).write_text(out_txt, encoding="utf-8", newline="\n")
             sh["path"].unlink()
         report["renamed"] += 1
         report["links_fixed"] += n_ent
@@ -347,7 +347,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                         f"|{old_disp}]]", f"|{new_disp}]]")
                     changed = True
             if changed:
-                info["path"].write_text(txt, encoding="utf-8")
+                info["path"].write_text(txt, encoding="utf-8", newline="\n")
                 report["links_fixed"] += 1
         # index.md (不在 all_pages 中, 单独处理)
         ip = W / "index.md"
@@ -360,7 +360,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                 it = it.replace(old, new).replace(
                     f"|{old_disp}]]", f"|{new_disp}]]")
             if it != orig:
-                ip.write_text(it, encoding="utf-8")
+                ip.write_text(it, encoding="utf-8", newline="\n")
 
     # ---- 4. 幻觉死链重定向 (T5 新增, v2) ----
     # LLM 生成字段值时可能输出 [[路径_hash8-12|显示名]] 形态链接, 指向从未
@@ -410,7 +410,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
             new_txt = _HALT_PLAIN_RE.sub(
                 lambda m: _redirect(m.group(1)), new_txt)
             if new_txt != txt:
-                fp.write_text(new_txt, encoding="utf-8")
+                fp.write_text(new_txt, encoding="utf-8", newline="\n")
                 fixed += 1
         # index.md 同样处理
         ip = W / "index.md"
@@ -421,7 +421,7 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
             new_it = _HALT_PLAIN_RE.sub(
                 lambda m: _redirect(m.group(1)), new_it)
             if new_it != it:
-                ip.write_text(new_it, encoding="utf-8")
+                ip.write_text(new_it, encoding="utf-8", newline="\n")
                 fixed += 1
         report["halluc_links_fixed"] = fixed
 
