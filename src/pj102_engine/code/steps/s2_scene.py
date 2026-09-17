@@ -6,15 +6,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 def s2_scene_recognition(content: str, llm: LLMClient) -> dict:
     """LLM 识别会议场景(含 v6.1 meeting_type 6 类 + subtype + v7.0 external_ref 标识)"""
-    excerpt = content[:4000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 4000)
 
     prompt = f"""请分析以下会议转写,输出 JSON 格式的会议场景信息:
 
-会议内容(前 4000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【v3.0 字段定义】

@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 # 9 类 enum
@@ -27,11 +28,11 @@ FINANCIAL_PARAM_TYPES = [
 
 def s13_financial_params(content: str, llm: LLMClient) -> list:
     """LLM 提取金融参数,返回 list[dict]"""
-    excerpt = content[:8000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 8000)
 
     prompt = f"""从会议内容中抓取所有定量金融参数,输出 JSON 数组:
 
-会议内容(前 8000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【9 类参数类型 - 必须选 1】

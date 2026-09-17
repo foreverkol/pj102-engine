@@ -111,7 +111,7 @@ def _add_disputed_block(md_file: Path, dispute: dict):
         # 没有就追加到末尾
         new_text = text.rstrip() + f"\n\n<!-- Status: Disputed -->\n  - topic_key: {topic_key}\n  - conflicting meetings: {meeting_ids}\n  - resolution: {dispute.get('resolution', 'pending_review')}\n"
 
-    md_file.write_text(new_text, encoding="utf-8")
+    md_file.write_text(new_text, encoding="utf-8", newline="\n")
 
 
 # ============ CLI ============

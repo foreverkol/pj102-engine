@@ -9,15 +9,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 def s4_fjv(content: str, llm: LLMClient) -> dict:
     """LLM 提取 FJV 三分法"""
-    excerpt = content[:8000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 8000)
 
     prompt = f"""请从以下会议中提取 FJV 三分法判断，输出 JSON 格式：
 
-会议内容（前 8000 字）：
+会议内容（前 {EXCERPT_LIMIT} 字）：
 {excerpt}
 
 FJV 说明：

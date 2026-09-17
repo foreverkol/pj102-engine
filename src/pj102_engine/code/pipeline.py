@@ -109,6 +109,65 @@ def mark_processed(cfg: AppConfig, filename: str, content_hash: str,
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ============================================================================
+# B3 缓存熔断 (2026-09-16)
+# ----------------------------------------------------------------------------
+# 实证背景: 2 个样本的 s3 产出为哨兵值 "未提取" 仍被照写盘 → 下游 s15 重放抛
+# S15MissingS3, 重放链断裂, 而批跑依然报"成功"。缓存是「可信重放」的契约,
+# 写入退化产物即违约。结论: 补跑治标, 熔断治本。
+#
+# 判据保守(只判明确退化):
+#   ① s3: one_sentence 为空/占位 (已实证的哨兵签名)
+#   ② 任意 dict 步: 全字段空/占位
+#   s13/s14 合法产物是 list, 空 list **不**判退化 (2026-09-16 实测修正, 防误报)
+# 兜底开关: PJ102_FUSE_DISABLE=1 临时关闭(应急), 默认启用。
+# ============================================================================
+FUSE_PLACEHOLDERS = {"", "未提取", "N/A", "n/a", "null", "None",
+                     "无", "未知", "待补充"}
+FUSE_LIST_STEPS = {"s13", "s14"}
+
+
+def _fuse_deg(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return v.strip() in FUSE_PLACEHOLDERS
+    if isinstance(v, (list, dict)):
+        return len(v) == 0
+    return False
+
+
+def fuse_check(step: str, data):
+    """缓存熔断判据 — 两级, 避免误伤合法空产出。
+
+    返回 (level, reason):
+      ('hard', why)  —— 已实证的确定性退化, **中止该样本** (不写缓存)
+      ('soft', why)  —— 可疑空产出, **不写缓存但不中止** (下次可重试; 不误伤批次)
+      (None, None)   —— 放行
+
+    分级理由: "确实无风险/无决策"是合法业务形态 (如 s8 risks 空), 若一律中止
+    会误伤批次; 但结论是「缓存只应存可信产物」—— 故软级也拒绝落盘。
+    """
+    if os.environ.get("PJ102_FUSE_DISABLE") == "1":
+        return None, None
+    if step in FUSE_LIST_STEPS or isinstance(data, list):
+        return None, None
+    if not isinstance(data, dict):
+        return "hard", f"非预期类型 {type(data).__name__}"
+    if not data:
+        return "hard", "空 dict (无任何产出)"
+    if step == "s3" and _fuse_deg(data.get("one_sentence")):
+        return "hard", f"s3.one_sentence 为空/占位: {data.get('one_sentence')!r}"
+    if all(_fuse_deg(v) for v in data.values()):
+        return "soft", "全字段空/占位 (可能确无产出, 也可能退化 —— 不落盘待复核)"
+    return None, None
+
+
+def fuse_reason(step: str, data):
+    """兼容入口: 返回退化理由字符串或 None"""
+    return fuse_check(step, data)[1]
+
+
 def process_one(sample: dict, llm: LLMClient, cfg: AppConfig,
                 integrate: bool = True) -> dict:
     """处理一个样本的 12+2 步全流程 + 集成钩子
@@ -135,7 +194,21 @@ def process_one(sample: dict, llm: LLMClient, cfg: AppConfig,
                 return None
         return None
 
+    # === B3 缓存熔断接线 (判据见模块级 fuse_check, 可单测) ===
     def _cache_put(step, data):
+        level, why = fuse_check(step, data)
+        if level == "hard":
+            msg = (f"缓存熔断[中止] {step} [{sample['filename'][:30]}]: {why}"
+                   f" —— 拒绝写入退化产物(下游重放链会因此断裂)")
+            sys.stderr.write(f"FUSE  {msg}\n")
+            sys.stderr.flush()
+            raise RuntimeError(msg)
+        if level == "soft":
+            sys.stderr.write(
+                f"FUSE  [软熔断·不落盘] {step} [{sample['filename'][:30]}]: "
+                f"{why} —— 本次不写缓存, 保持可重试\n")
+            sys.stderr.flush()
+            return
         try:
             (cache_dir / f"{step}.json").write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -155,33 +228,42 @@ def process_one(sample: dict, llm: LLMClient, cfg: AppConfig,
     _t0 = _t.time()
     _th.Thread(target=_pulse, daemon=True).start()
     def _hb(step): sys.stdout.write(f"  [heartbeat] {sample['filename'][:30]} {step} t={_t.time()-_t0:.0f}s\n"); sys.stdout.flush()
-    # s1 不调 LLM(纯规则), 直接缓存
-    _hb("s1");  s1 = s1_basic_info(sample["filename"], content); _cache_put("s1", s1)
-    # s2-s14 先查缓存, 跳过已成功步骤
-    def _step(step, fn):
-        cached = _cache_get(step)
-        if cached is not None:
-            sys.stdout.write(f"  [cache-hit] {step}\n"); sys.stdout.flush()
-            return cached
-        _hb(step)
-        val = fn()
-        _cache_put(step, val)
-        return val
+    # D-74 (2026-09-17 实证): 脉冲线程的停止必须放在 `finally`。
+    #   原实现只在成功路径末尾 `_pulse_stop.set()`，而**抛异常的样本会让这个
+    #   daemon 线程永久泄漏**（pipeline 由 driver 长驻进程串行调用 30 次也不回收）。
+    #   后果不止日志噪声 —— 泄漏线程以 5s 周期继续写
+    #   `  [pulse n] <样本名> alive t=NNNNs`，多个不同 `_t0` 的线程叠加后，
+    #   日志呈现出「多个样本同时在跑」的假象。E1 复盘时据此一度误判为**并发跑批**，
+    #   查证 run_full 无任何 Thread/Pool 后才定位到泄漏（通则：观测装置自身会污染判断）。
+    try:
+        # s1 不调 LLM(纯规则), 直接缓存
+        _hb("s1");  s1 = s1_basic_info(sample["filename"], content); _cache_put("s1", s1)
+        # s2-s14 先查缓存, 跳过已成功步骤
+        def _step(step, fn):
+            cached = _cache_get(step)
+            if cached is not None:
+                sys.stdout.write(f"  [cache-hit] {step}\n"); sys.stdout.flush()
+                return cached
+            _hb(step)
+            val = fn()
+            _cache_put(step, val)
+            return val
 
-    s2 = _step("s2", lambda: s2_scene_recognition(content, llm))
-    s3 = _step("s3", lambda: s3_standard_summary(content, llm))
-    s4 = _step("s4", lambda: s4_fjv(content, llm))
-    s5 = _step("s5", lambda: s5_implicit_knowledge(content, llm))
-    s6 = _step("s6", lambda: s6_entity_extraction(content, llm))
-    s7 = _step("s7", lambda: s7_action_decision(content, llm))
-    s8 = _step("s8", lambda: s8_risk_blindspot(content, llm))
-    s9 = _step("s9", lambda: s9_knowledge_classify(content, llm))
-    s10 = _step("s10", lambda: s10_cognitive_refine(content, llm))
-    s11 = _step("s11", lambda: s11_value_rating(content, llm))
-    s13 = _step("s13", lambda: s13_financial_params(content, llm))
-    s14 = _step("s14", lambda: s14_scenario(content, llm))
-    sys.stdout.write(f"  [heartbeat] {sample['filename'][:30]} s1-s14 done in {_t.time()-_t0:.0f}s\n"); sys.stdout.flush()
-    _pulse_stop.set()
+        s2 = _step("s2", lambda: s2_scene_recognition(content, llm))
+        s3 = _step("s3", lambda: s3_standard_summary(content, llm))
+        s4 = _step("s4", lambda: s4_fjv(content, llm))
+        s5 = _step("s5", lambda: s5_implicit_knowledge(content, llm))
+        s6 = _step("s6", lambda: s6_entity_extraction(content, llm))
+        s7 = _step("s7", lambda: s7_action_decision(content, llm))
+        s8 = _step("s8", lambda: s8_risk_blindspot(content, llm))
+        s9 = _step("s9", lambda: s9_knowledge_classify(content, llm))
+        s10 = _step("s10", lambda: s10_cognitive_refine(content, llm))
+        s11 = _step("s11", lambda: s11_value_rating(content, llm))
+        s13 = _step("s13", lambda: s13_financial_params(content, llm))
+        s14 = _step("s14", lambda: s14_scenario(content, llm))
+        sys.stdout.write(f"  [heartbeat] {sample['filename'][:30]} s1-s14 done in {_t.time()-_t0:.0f}s\n"); sys.stdout.flush()
+    finally:
+        _pulse_stop.set()
 
     state = {
         "sample": sample["filename"],
@@ -229,23 +311,37 @@ def _run_integrations(state: dict, cfg: AppConfig, logger) -> None:
     try:
         from entity_resolver import EntityResolver
         resolver = EntityResolver(cfg.paths.registry_path)
-        resolved = 0
-        for p in state.get("s6", {}).get("persons", []):
-            if isinstance(p, dict) and p.get("name"):
+        counter = {"resolved": 0, "skipped_junk": 0}
+
+        def _assign(items, etype):
+            """编号并**剔除机器标签**（源稿口条/占位符），返回过滤后的列表。
+
+            为什么必须剔除而不是只打标记：s12 是"遍历 persons 建页"的，
+            留下就会生成 `发言人2.md` 这类垃圾实体页（2026-09-16 实测：
+            registry 9 个垃圾 canonical + wiki 同名页）。
+            """
+            out = []
+            for it in items:
+                if not (isinstance(it, dict) and it.get("name")):
+                    continue
                 r = resolver.resolve_or_create(
-                    "person", p["name"], p.get("aliases", []))
-                p["entity_id"] = r["entity_id"]      # 回写, s12 写 frontmatter
-                p["canonical_name"] = r.get("canonical_name", p["name"])
-                resolved += 1
-        for o in state.get("s6", {}).get("organizations", []):
-            if isinstance(o, dict) and o.get("name"):
-                r = resolver.resolve_or_create(
-                    "organization", o["name"], o.get("aliases", []))
-                o["entity_id"] = r["entity_id"]
-                o["canonical_name"] = r.get("canonical_name", o["name"])
-                resolved += 1
+                    etype, it["name"], it.get("aliases", []))
+                if r.get("action") == "skip":
+                    counter["skipped_junk"] += 1
+                    continue
+                it["entity_id"] = r["entity_id"]      # 回写, s12 写 frontmatter
+                it["canonical_name"] = r.get("canonical_name", it["name"])
+                counter["resolved"] += 1
+                out.append(it)
+            return out
+
+        s6 = state.get("s6") or {}
+        if isinstance(s6.get("persons"), list):
+            s6["persons"] = _assign(s6["persons"], "person")
+        if isinstance(s6.get("organizations"), list):
+            s6["organizations"] = _assign(s6["organizations"], "organization")
         resolver.save()
-        integ["entity_resolver"] = {"resolved": resolved}
+        integ["entity_resolver"] = dict(counter)
     except Exception as e:
         logger.warning(f"entity_resolver 集成失败: {e}", step="integration")
 

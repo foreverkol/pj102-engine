@@ -5,16 +5,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_client import LLMClient, safe_json_parse
+from llm_client import LLMClient, safe_json_dict
+from excerpt import excerpt_for_llm
 
 
 def s6_entity_extraction(content: str, llm: LLMClient) -> dict:
     """LLM 5 类实体 + v7.0 canonical_name + aliases + quote_orig"""
-    excerpt = content[:10000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 10000)
 
     prompt = f"""从以下会议内容抽取 5 类实体,输出 JSON(v7.0 增强版):
 
-会议内容(前 10000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【v3.0 字段规范】
@@ -77,7 +78,7 @@ def s6_entity_extraction(content: str, llm: LLMClient) -> dict:
 4. 只输出 JSON
 """
     result = llm.call(prompt, max_tokens=524288)  # v3.0 S10.2: 按官方上限 524288
-    parsed = safe_json_parse(result, {
+    parsed = safe_json_dict(result, {
         "persons": [],
         "organizations": [],
         "concepts": [],

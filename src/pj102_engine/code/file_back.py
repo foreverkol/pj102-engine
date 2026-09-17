@@ -137,7 +137,7 @@ def archive_query(query: str, synthesis: str, citations: List[str],
             md_content += f"- [{c}]({c})\n"
 
     # 写入
-    answer_path.write_text(md_content, encoding="utf-8")
+    answer_path.write_text(md_content, encoding="utf-8", newline="\n")
     log.info(f"归档 answer: {answer_path.name} (hash={content_hash})",
              step="file_back", sample=query[:30])
 

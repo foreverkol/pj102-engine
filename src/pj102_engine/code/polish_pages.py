@@ -125,6 +125,61 @@ def fm_get(fm: str, key: str) -> str:
     return m.group(1).strip().strip('"').strip("'")
 
 
+# ---- v1.6 (D-75, 2026-09-17): 分片页丢弃必须过「内容承接」门 ----
+# 现场事故: E1 批次 13:34 的收尾中, 210 个分片页里有 20 份的**实质内容**
+# 未被任何规范页承接即被 unlink, 只留下会议页里的实体描述行 (实体页层缺失)。
+# 三条无校验丢弃路径:
+#   ① `(type, hash)` 兜底键跨实体错配 (name 不同却命中同类型首个页) → 错删
+#   ② 分支 A 冗余删除只认键、不认内容 → 同名不同源(同实体不同次出现)被当复写
+#   ③ SKIP-DUP 幂等守卫以「source_meeting 字面已出现」为判据 → 同源重跑的
+#      更新内容整份丢弃
+# 现统一为一条不变式: **分片页只有在其实质内容已被目标页承接时才可丢弃**;
+# 未承接 ⇒ 强制并入目标页 (而非新建 (2) 副本), 保证只增不减。
+
+def _norm_line(s: str) -> str:
+    s = re.sub(r"\[\[([^\]|]+)\|([^\]]+)\]\]", r"\2", s)
+    s = re.sub(r"\[\[([^\]]+)\]\]", r"\1", s)
+    return s.replace("**", "")
+
+
+def _body_lines(txt: str, cut_sections: bool = True) -> List[str]:
+    """正文行集合。cut_sections=True 时裁掉『元信息』『关联网络』段。
+
+    ⚠ 该裁切只可用于**分片侧**。若对**目标页**也裁切, 则被并入的
+    `### {date} 补充出现` 块 (位于『关联网络』**之后**) 会被误判为不存在
+    ⇒ `_contained` 永远 False ⇒ 每次重跑重复并入, 幂等被破坏 (D-75 附带修正)。
+    """
+    _, body = split_fm(txt)
+    if cut_sections:
+        for cut in ("## 📑 元信息", "## 🔗 关联网络"):
+            i = body.find(cut)
+            if i >= 0:
+                body = body[:i]
+    out: List[str] = []
+    for ln in body.split("\n"):
+        s = _norm_line(ln.strip())
+        if not s or s.startswith("#"):
+            continue
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _subst_lines(txt: str) -> List[str]:
+    """分片侧实质内容行 (裁节 + 去链接/粗体修饰)。"""
+    return _body_lines(txt, True)
+
+
+def _contained(shard_text: str, target_text: str) -> Tuple[bool, List[str]]:
+    """分片实质内容是否全部被目标页承接 → (bool, 未承接行)。
+
+    目标侧用**全文行集**(不裁节), 否则「已并入但在关联网络之后」的内容会被误判。
+    """
+    tl = set(_body_lines(target_text, False))
+    missing = [x for x in _body_lines(shard_text, True) if x not in tl]
+    return (not missing), missing
+
+
 def _parse_page(p: Path) -> dict:
     txt = p.read_text(encoding="utf-8")
     fm, body = split_fm(txt)
@@ -200,18 +255,47 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
         rel = sh["rel"]
         # A. 冗余判定: 实体/概念页 (name+source_hash) 或 场景页 (theme+source_ref)
         #    T1 兜底: judgment/meeting 无 name → 按 (type, hash) 判定同类型正页存在即冗余
+        #    v1.6 (D-75): 兜底键加 name 守卫; 且「丢弃」前必须过内容承接门
         key = (sh["name"], sh["source_hash"])
         scen_key = (fm_get(sh["fm"], "theme"), sh["source_ref"])
         sh_hash = sh["source_hash"] or fm_get(sh["fm"], "content_hash") \
             or fm_get(sh["fm"], "file_hash")
-        target = norm_keys.get(key) or norm_scen.get(scen_key) \
-            or hash_idx.get((sh["type"], sh_hash))
+        target = norm_keys.get(key) or norm_scen.get(scen_key)
+        if target is None:
+            _fb = hash_idx.get((sh["type"], sh_hash))
+            # D-75: 该兜底仅为「无 name 的 judgment/meeting」设计。有 name 的分片
+            #   若命中同类型但他名的正页, 属跨实体错配 ⇒ 禁用 (否则静默错删)。
+            if _fb and sh["name"]:
+                _tn = all_pages.get(_fb, {}).get("name", "")
+                if _tn and _tn != sh["name"]:
+                    _fb = None
+            target = _fb
         if target:
+            _tp = W / (target + ".md")
+            _tt = _tp.read_text(encoding="utf-8") if _tp.exists() else ""
+            _okc, _miss = _contained(sh["text"], _tt)
+            if _okc:
+                if not dry_run:
+                    sh["path"].unlink()
+                report["redundant_deleted"] += 1
+                report["details"].append(f"DEL  {rel}  ≡ {target}")
+                renames[rel] = target          # 入链转移目标
+                continue
+            # v1.6 (D-75): 键命中但内容未被承接 (同实体的另一次出现: 描述/引用/出现会议)
+            #   ⇒ 强制并入目标页, 不新建「（2）」副本 —— 分片页只增不减。
             if not dry_run:
+                _b = sh["body"]
+                _mp = _b.find("\n## 📑 元信息")
+                _main = _b[:_mp] if _mp >= 0 else _b
+                _ct = _merge_appended(
+                    _tt, _main, "",
+                    mark=f"### {sh['date'] or sh['path'].stem} 补充出现")
+                _tp.write_text(_ct, encoding="utf-8", newline="\n")
                 sh["path"].unlink()
-            report["redundant_deleted"] += 1
-            report["details"].append(f"DEL  {rel}  ≡ {target}")
-            renames[rel] = target          # 入链转移目标
+            report["entity_merged"] += 1
+            report["details"].append(
+                f"MERGE {rel} -> {target}  (键冗余但内容未承接 ⇒ 强制并入)")
+            renames[rel] = target
             continue
 
         # B. 新页收尾: 计算规范名
@@ -223,6 +307,13 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
         base = _sanitize(sh["name"]) \
             or (_sanitize(_ttl[:50]) if _ttl else "") \
             or _sanitize(raw) or "未命名"
+        # v1.5 (D-61-a, 2026-09-16): 会议页补日期前缀 —— 对齐 KB 既有约定。
+        #   分片源名本就带日期(`meeting_{date}_{hash}`), 且既有 16/22 会议页为
+        #   `{date} {title}`, 摘要页亦为 `摘要_{date}_{title}`。
+        #   缺日期前缀会使 Obsidian 文件列表失去时序排序, 且同日会议无法区分。
+        if sub_dir.endswith("Meetings") and sh["date"] \
+                and not base.startswith(sh["date"]):
+            base = f"{sh['date']} {base}"
         # v1.3 (P2 T-P2.2): 实体页不再拼日期 → 一人一页约定;
         # 同名规范主页已存在 → 并入其时间线 (merge_mode), 不新建分片页
         is_ent = sub_dir.endswith(("Persons", "Organizations"))
@@ -267,8 +358,13 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
         mrel = meeting_idx.get(sh["source_meeting"] or "")
         if mrel:
             sec.append(f"- **来源会议**: [[{mrel}]]\n")
+        # v1.5 (D-61-b, 2026-09-16): 「同源页面」判据必须要求 source_hash **非空**。
+        #   实测：会议页 frontmatter 无 source_hash 字段 ⇒ 20 个会议分片全部取到
+        #   None，而 `None == None` 恒真 ⇒ 每页把它们**误判为同一次沟通的产出**
+        #   （且因 renames 随循环增长而顺序相关、非对称），凭空产生 190 条虚假双链。
         peers = [r for r in renames
-                 if r != rel and all_pages.get(r, {}).get("source_hash") == sh["source_hash"]
+                 if r != rel and sh["source_hash"]           # ← D-61-b: 必须非空
+                 and all_pages.get(r, {}).get("source_hash") == sh["source_hash"]
                  and renames[r] != new_rel]
         if peers:
             sec.append("- **同源页面**（同一次沟通中产出）:\n")
@@ -283,7 +379,12 @@ def polish_pages(wiki_root, dry_run: bool = False) -> dict:
                 cp = W / (new_rel + ".md")
                 ct = cp.read_text(encoding="utf-8")
                 # 幂等守卫: 同一 source_meeting 已并入过则跳过 (防沙箱重试双写)
-                if _mark and _mark in ct:
+                # v1.6 (D-75): 守卫必须叠加「内容已承接」校验 —— 同源**重跑**产出的
+                #   更新内容会因字面已出现而被整份丢弃 (只增不减被破坏)。
+                _dup_ok = bool(_mark) and _mark in ct
+                if _dup_ok and not _contained(sh["text"], ct)[0]:
+                    _dup_ok = False
+                if _dup_ok:
                     sh["path"].unlink()
                     report["details"].append(f"SKIP-DUP {rel} -> {new_rel} (已并入)")
                 else:

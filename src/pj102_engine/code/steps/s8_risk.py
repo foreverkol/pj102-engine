@@ -6,15 +6,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 def s8_risk_blindspot(content: str, llm: LLMClient) -> dict:
     """LLM 提取风险和盲区"""
-    excerpt = content[:6000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 6000)
 
     prompt = f"""从会议中识别风险点和盲区，输出 JSON 格式：
 
-会议内容（前 6000 字）：
+会议内容（前 {EXCERPT_LIMIT} 字）：
 {excerpt}
 
 请输出：

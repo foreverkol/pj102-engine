@@ -3,6 +3,102 @@
 本项目的所有重要变更记录在此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [2.5.0] - 2026-09-17
+
+**引擎设施补全：LLM 输入截断统一入口 · 缓存熔断 · 内容承接门 · 日期权威分层判据**，
+并**补齐引擎自身两处既有缺陷**（后处理装置死于无人调用 / ASR 别名探测路径差一级）。
+测试 **85 → 118 passed**。
+
+> 上游范围经 `scripts/engine_sync_probe_20260917.py` 勘察裁定：先**归一化**
+> （去 BOM / CRLF→LF / 去行尾空白）再比对，并按**行的语法角色**分型 ——
+> 避免把「实例中性化差异」误当工作量。**环境适配与部署侧数据一律不上游**。
+
+### 新增
+
+- **`code/excerpt.py` —— LLM 输入截断的单一入口**。
+  原先 12 个 LLM 步骤各自硬编码 `content[:N]`（4000~10000 不等），且**都不告知
+  模型「末尾已省略」** ⇒ 长会议（中位 25664 字）中后段被系统性丢弃，模型对残缺
+  上下文臆测或弃答 ⇒ 落盘空骨架被判为「无产出」。现统一为
+  `excerpt_for_llm(content, default)`，超限时把「原文共 X 字 / 末尾 Y 字未提供 /
+  不要臆测」**直接拼进 excerpt**；环境变量 `PJ102_EXCERPT_LIMIT` 提供统一下限。
+  12 个消费方同步接线（`steps/{s2,s4,s5,s6,s7,s8,s9,s10,s11,s13,s14}.py` + `s3_summary`）。
+- **`code/pipeline.py`：B3 缓存熔断 `fuse_check`（两级）**。
+  `hard` ＝ 已实证的确定性退化（如 s3 的 `one_sentence` 为空/占位）⇒ **中止该样本**；
+  `soft` ＝ 「全字段空/占位」⇒ **不落盘但样本继续**（保持可重试、不误伤批次）。
+  `s13/s14` 合法产物是 list，空 list **不**判退化。
+  开关 `PJ102_FUSE_DISABLE=1` 应急关闭。
+  理由：缓存是「可信重放」的契约 —— 写入退化产物即违约（曾致下游 s15 重放抛
+  `S15MissingS3`，而批跑依然报「成功」）。
+- **`code/polish_pages.py` v1.6：分片页丢弃必须过「内容承接」门**。
+  三条无校验丢弃路径曾致 210 个分片页中 20 份的**实质内容未被任何规范页承接即被
+  unlink**。现统一为一条不变式：**分片页只有在其实质内容已被目标页承接时才可丢弃**；
+  未承接 ⇒ **强制并入目标页**（而非新建「（2）」副本），保证只增不减。
+  含 `_norm_line` / `_body_lines` / `_subst_lines` / `_contained` 装置。
+- **`scripts/run_full.py` 接线 4 个后处理装置**：2.5 `link_orphans`（孤儿回链补齐，
+  必须排在 backlink_builder 之后、index_builder 之前）、7.5 `normalize_tree`
+  （出口署名校正，幂等）、7.6 registry 别名健康度巡检（只读 + 告警）、
+  8 `baseline_check`（19 维标尺对拍，使「每批次后自动断言」成为管线固有行为）。
+  ⇒ 原版上述装置**死于无人调用**（与旧基线 `p1_lint_baseline.json` 同一病因）。
+- **`scripts/baseline_check.py`（19 维标尺对拍）** 与
+  **`scripts/audit_registry_aliases.py`（registry 别名健康度巡检）** 随引擎首次分发。
+- **`scripts/s3_fidelity_gate_20260916.py`（s3 值级忠实度门）**：把 s3 抽出的每个
+  数字**回原始转写稿**做值级比对（不采信 wiki 派生文本），分层判据
+  L1 exact → L2 去分隔 → L3 口读连写（含**降序链** `1亿1511万`）→ L4 量级换算，
+  MISS 即可疑编造。支持多源回退，并打印 `skipped` 计数防「单源假绿」。
+- **`scripts/engine_sync_probe_20260917.py`（引擎 ↔ 部署仓差异勘察器）**：
+  落实「每处热修都问：引擎侧是否同步」的自动化装置。**只读**。
+
+### 修复
+
+- **`code/steps/s1_basic.py`：日期权威改为分层判据**。
+  源稿**文件名的年月日可能笔误**（有孪生副本 sha256 完全相同却日期不同者），
+  而**文件头也可能被污染**（与内部标题自相矛盾）⇒ 单一证据源都不可信。
+  改为：⓪ `config/date_authority.json` 覆盖表 → ① 头部与内部标题**年月日交叉一致**
+  则采信 → ② 不一致/缺失则回退文件名（保持历史行为，零回归）。
+  判据**只用年月日、不比时分**（时分本就不一致，比了反使判据失效）。
+- **`code/steps/s3_summary.py`（四项）**：
+  1. **截断上限 6000 → 20000 字**（原值只覆盖源稿中位长的约 23%），并在提示词中
+     **显式告知「末尾 N 字未提供、不要臆测」**；
+  2. 提示词新增**署名硬规则**：方括号内只写人名本身，**严禁**「发言人 / 发言人本人 /
+     说话人 / 本人 / 关键发言人」等转写口条词；
+  3. **抓取规则扩展**：人数（几百人 / 十几人）、时长（一年左右）、倍数、月份等
+     **非货币数字**同样是关键数字，严禁因缺少货币单位而漏抓；
+  4. 出口兜底清洗（幂等，仅 T1/T2）—— 白名单归约（T3）依赖部署侧数据，**刻意不启用**
+     以保持引擎可移植。
+- **`code/entity_resolver.py`（ASR 别名探测路径差一级）**：
+  原 `<registry>/../../config/asr_alias.json` 在多种布局下解析错位 ⇒ 探测失败 ⇒
+  `load_asr_alias(None)` **静默降级为空表** ⇒ ASR 音近错听映射在整个链路中失效。
+  改为自 registry **逐级上溯**探测 `<ancestor>/config/asr_alias.json`（布局无关）。
+- **`code/pipeline.py`（线程泄漏）**：脉冲线程停止原先只在成功路径执行 ⇒
+  **抛异常的样本会让 daemon 线程永久泄漏**，日志出现「多个样本同时在跑」的假象
+  （曾被误判为并发跑批）。改为 `try/finally`。
+- **`code/llm_client.py`（四项）**：
+  1. **空响应必须计为重试** —— SSE 建连成功、随即 0 字节结束时原实现直接 `return ""`，
+     被当作「成功」⇒ 不再重试 ⇒ 步骤产出全字段空 ⇒ 被软熔断拒落盘；
+  2. **`base_resp` 透出** —— MiniMax 的业务级错误以 **HTTP 200 + SSE** 返回、
+     `choices` 为 `null`，真实原因在 `base_resp.status_code`；原实现直接 `continue`
+     ⇒ **错误被静默吞掉**，与真正的网络抖动无法区分；
+  3. **429/5xx 重试条件修正** —— 原 `e.code == 429 and e.code >= 500` **恒假**，
+     限流与服务端错误从未触发重试；
+  4. **JSON 解析失败可见化**（写 `sys.stderr`）：原静默兜底把「解析失败」伪装成
+     「确无产出」；另补 `import sys`（原缺失 ⇒ 兜底分支 `NameError`）。
+- **`code/judgments_aggregator.py` 补 `import os`**：使用了 `os.environ` 但顶部未 import。
+- **写入侧统一声明 `newline="\n"`**（8 文件 / 10 处）：`.gitattributes` 只管 **git 侧**，
+  写入侧不显式指定则在 Windows 上写出 CRLF 污染工作区。
+
+### 测试
+
+- 新增 6 个**布局无关**测试（33 例）：`test_llm_empty_retry`(4) /
+  `test_llm_server_refusal`(6) / `test_newline_contract`(8) / `test_pulse_thread_leak`(2) /
+  `test_s3_prompt_contract`(5) / `test_s3_value_gate`(8)。
+  `test_llm_server_refusal` 内嵌**实测原始报文**做回归；
+  `test_s3_value_gate` 含**负控**（真编造必须仍被抓，防「宽容」演化成「放水」）。
+- **修复既有测试的路径脆弱性**：`test_entity_alias_guard` 与 `test_fidelity_gate`
+  原先只写 `ROOT/"code"`（src layout 下不存在），**依赖收集顺序副作用**才能 import ——
+  单独跑必 collection error、逆序跑会中断整个套件。现统一为**双布局**解析
+  （模板见 `tests/test_d42_no_id_ops.py`）。
+- 合计 **118 例**（85 → 118）。
+
 ## [2.4.0] - 2026-09-16
 
 **backlink 归属修复 + LLM 调用可观测性 + 引擎测试体系建立**。

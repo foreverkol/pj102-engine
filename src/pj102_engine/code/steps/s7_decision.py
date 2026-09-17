@@ -5,16 +5,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_client import LLMClient, safe_json_parse
+from llm_client import LLMClient, safe_json_dict
+from excerpt import excerpt_for_llm
 
 
 def s7_action_decision(content: str, llm: LLMClient) -> dict:
     """LLM 决策 + 行动项 + v7.0 topic_key + evolution + quote_orig"""
-    excerpt = content[:8000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 8000)
 
     prompt = f"""从以下会议内容抽取决策 + 行动项,输出 JSON:
 
-会议内容(前 8000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【v3.0 输出格式(v7.0 增强版)】
@@ -87,7 +88,7 @@ def s7_action_decision(content: str, llm: LLMClient) -> dict:
 5. 只输出 JSON
 """
     result = llm.call(prompt, max_tokens=524288)  # v3.0 S10.2: 按官方上限 524288
-    parsed = safe_json_parse(result, {
+    parsed = safe_json_dict(result, {
         "decisions": [],
         "action_items": [],
     })

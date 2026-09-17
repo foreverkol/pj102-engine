@@ -58,10 +58,12 @@ os.environ.setdefault("MINIMAX_CN_BASE_URL", "https://api.minimaxi.com")
 
 PROJECT_ROOT = Path(os.environ.get("PJ102_PROJECT_ROOT") or Path.cwd())
 CODE_DIR = PROJECT_ROOT / "code"
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 # 关键: 启用 LLM 客户端 4 层心跳防御 (PJ102_DRIVER_LOG)
 # 写入独立文件, sandbox 看 mtime 不停 → 不 reap
 os.environ["PJ102_DRIVER_LOG"] = str(PROJECT_ROOT / "system" / "logs" / "llm_heartbeat.log")
 sys.path.insert(0, str(CODE_DIR))
+sys.path.insert(0, str(SCRIPTS_DIR))   # T4: 后处理链需 import link_orphans
 os.environ.setdefault("PJ102_PROJECT_ROOT", str(PROJECT_ROOT))
 
 import yaml  # noqa: E402
@@ -112,7 +114,7 @@ def _append_log(operation: str, title: str, details=None):
     lines = [f"\n## [{ts}] {operation} | {title}"]
     for d in details or []:
         lines.append(f"- {d}")
-    with open(log_path, "a", encoding="utf-8") as f:
+    with open(log_path, "a", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
 
 
@@ -157,8 +159,30 @@ def write_batch_report(batch: dict) -> Path:
     return path
 
 
+def _step_link_orphans(dry_run: bool = False) -> dict:
+    """T4 (2026-09-14 接线): 孤儿知识页回链补齐。
+
+    确定性 / 零 LLM / 幂等。孤儿知识页从其来源会议页取回链。
+    必须排在 backlink_builder 之后、index_builder 之前 —— 新挂的 [[..]] 要被主索引收录。
+
+    不接线的后果已实测: 2026-09-14 四轮重跑使孤页 3 -> 11, 每批只增不减。
+    """
+    try:
+        from link_orphans import link_orphans
+        r = link_orphans(dry_run=dry_run)
+        return {
+            "link_orphans_meetings": r.get("meetings_touched", 0),
+            "link_orphans_added": r.get("links_added", 0),
+            "link_orphans_unresolved": len(r.get("unresolved", [])),
+            "link_orphans_exempt": len(r.get("exempt_synthesis", [])),
+        }
+    except Exception as e:
+        return {"link_orphans_error": str(e)[:200]}
+
+
 def run_post_processing(cfg: AppConfig) -> dict:
-    """v4.0 后处理: polish + concept_merger + backlink_builder + index_builder"""
+    """v4.0 后处理: polish + concept_merger + backlink_builder + link_orphans + index_builder
+    + baseline_check (19 维标尺对拍, B1 接线 2026-09-16)"""
     report = {}
 
     # 0. polish_pages (s12 分片页增量收尾) — W3-T3.2 接线
@@ -186,6 +210,11 @@ def run_post_processing(cfg: AppConfig) -> dict:
         report["backlinks_added"] = r.get("backlinks_added", 0)
     except Exception as e:
         report["backlink_error"] = str(e)[:200]
+
+    # 2.5 link_orphans (孤儿知识页回链补齐, 纯文件处理) — 2026-09-14 T4 接线
+    #     位置: backlink_builder 之后 / index_builder 之前 (新挂 [[..]] 需被主索引收录)
+    #     根治"每跑一批孤页只增不减" (09-14 实测 3 -> 11)
+    report.update(_step_link_orphans())
 
     # 3. index_builder (主索引重建)
     try:
@@ -215,7 +244,7 @@ def run_post_processing(cfg: AppConfig) -> dict:
     except Exception as e:
         report["fix_index_error"] = str(e)[:200]
 
-    # 5. lint_wiki (8 维巡检) — W1-T0.1 接线
+    # 5. lint_wiki (15 维巡检) — W1-T0.1 接线
     try:
         from lint_wiki import lint_wiki
         lint_report = lint_wiki(cfg.paths.wiki_base)
@@ -248,10 +277,89 @@ def run_post_processing(cfg: AppConfig) -> dict:
             f"fix_index: 死链 {report.get('fix_index_dead_links', 'n/a')} / "
             f"wikilink {report.get('fix_index_wikilinks', 'n/a')}",
             f"lint: {report.get('lint', 'n/a')}",
+            f"orphans: 挂链 {report.get('link_orphans_added', 'n/a')} "
+            f"/ 待解 {report.get('link_orphans_unresolved', 'n/a')}",
             f"disputes: {report.get('disputes_found', 0)}",
         ])
     except Exception as e:
         report["log_error"] = str(e)[:200]
+
+    # 7.5 wiki 文本规范化 (署名清洗 + 可选行尾归一) — 2026-09-16 接线
+    #     为什么必须接线: speaker_norm 是"防复发"装置; 不接入管线它就会和旧基线
+    #     system/state/p1_lint_baseline.json 一样"死于无人调用"(本轮修的三个缺陷同一病因)。
+    #     为什么放出口: 署名噪声由 s15 渲染带入, 无论上游哪个模块写入, 出口一次校正
+    #     最安全, 且幂等 (无变更则零副作用)。
+    #     白名单属实例数据 (config/speaker_alias.json), 刻意不进 code/ 引擎逻辑。
+    #     ⚠ 行尾归一**默认关闭**: 实测 wiki 为 708 CRLF / 17 LF 混合态, 一次性归一
+    #       会改写数百文件 → 属批量破坏性变更, 需 PJ102_NORMALIZE_NEWLINES=1 显式授权。
+    if os.environ.get("PJ102_SKIP_NORMALIZE") != "1":
+        try:
+            from speaker_norm import load_alias_config, normalize_tree
+            _alias = PROJECT_ROOT / "config" / "speaker_alias.json"
+            _nl = os.environ.get("PJ102_NORMALIZE_NEWLINES") == "1"
+            r = normalize_tree(cfg.paths.wiki_base, exts=(".md",), apply=True,
+                               normalize_newlines=_nl,
+                               alias_cfg=load_alias_config(str(_alias)))
+            report["normalize"] = {
+                "files_changed": r["files_changed"],
+                "noise_before": r["noise_before"],
+                "noise_after": r["noise_after"],
+                "residuals": len(r["residuals"]),
+                "newline_files_changed": r["newline_files_changed"],
+            }
+        except Exception as e:
+            report["normalize_error"] = str(e)[:200]
+
+    # 7.6 registry 别名健康度 (只读巡检 + 告警) — 2026-09-16 接线
+    #     同一病因: 装置写好不接线 = 等于没有。
+    #     registry 是实体归并的**权威源**; 实测曾出现"实体黑洞"
+    #     (person_71add69e 把梁超杰/蒋总/杨总等 5 人并进同一 entity_id)。
+    #     这里只做**只读巡检 + 告警**, 不自动修 —— 修复含语义判断,
+    #     必须由 `scripts/audit_registry_aliases.py --apply` 显式触发 (幂等+自动快照)。
+    if os.environ.get("PJ102_SKIP_REGISTRY_AUDIT") != "1":
+        try:
+            import audit_registry_aliases as _ra
+            _rep = _ra.audit(_ra.load_registry(cfg.paths.registry_path))
+            report["registry_audit"] = {
+                "entities": _rep["entity_total"],
+                "weak_alias_total": _rep["weak_alias_total"],
+                "cross_conflicts": len(_rep["cross_entity_conflicts"]),
+                "junk_canonical_active": len(_rep["junk_canonical_active"]),
+            }
+            _bad = (_rep["weak_alias_total"]
+                    + len(_rep["cross_entity_conflicts"])
+                    + len(_rep["junk_canonical_active"]))
+            if _bad:
+                sys.stderr.write(
+                    f"WARN  registry 别名健康度: 弱标识 {_rep['weak_alias_total']} · "
+                    f"跨实体冲突 {len(_rep['cross_entity_conflicts'])} · "
+                    f"未标记垃圾 canonical {len(_rep['junk_canonical_active'])} "
+                    f"→ 运行 scripts/audit_registry_aliases.py --apply\n")
+        except Exception as e:
+            report["registry_audit_error"] = str(e)[:200]
+
+    # 8. baseline_check (19 维标尺对拍) — B1 接线 2026-09-16
+    #    为什么接线: 旧基线 system/state/p1_lint_baseline.json 死于"全项目无人调用",
+    #    "零回归断言"退化成了人工比对 -> 基线锚 475 页而现状 725 页, 断言早已失效。
+    #    本步使"每批次后自动断言"成为管线固有行为; 检出回归时记入 report (不阻断批次)。
+    try:
+        import subprocess as _sp
+        r = _sp.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "baseline_check.py")],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180,
+        )
+        out = (r.stdout or "")
+        m = re.search(r"回归: (\d+) · 改善: (\d+) · 持平: (\d+) · 内容位移: (\d+)", out)
+        m2 = re.search(r"net_orphans = (\d+)", out)
+        report["baseline_rc"] = r.returncode
+        report["baseline_regressed"] = int(m.group(1)) if m else None
+        report["baseline_improved"] = int(m.group(2)) if m else None
+        report["baseline_net_orphans"] = int(m2.group(1)) if m2 else None
+        if r.returncode != 0:
+            report["baseline_warn"] = "标尺未通过 (存在回归或 net_orphans != 0)"
+    except Exception as e:
+        report["baseline_error"] = str(e)[:200]
 
     return report
 

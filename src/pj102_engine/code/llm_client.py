@@ -16,6 +16,7 @@ LLM 客户端 - PJ-102-LLM-MeetingKB v1.0
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -95,6 +96,26 @@ class LLMClient:
                     r = self._mock_response()
                 print("[llm] attempt %d 完成：返回 %d 字，耗时 %.0fs"
                       % (attempt + 1, len(r or ""), time.time() - t0), flush=True)
+                # D-76 (2026-09-17): **空响应必须计为重试**。
+                #   现象：SSE 建连成功、随即 0 字节结束 → 此处曾直接 return ""，
+                #         被当作「成功」⇒ 不再重试。
+                #   后果链：safe_json_parse("") 走兜底分支返回空结构 ⇒ 步骤产出
+                #         「全字段空」⇒ pipeline.fuse_check 判 **soft 熔断拒落盘**
+                #         ⇒ 表现为 lint_cache C1「某样本缺某步缓存」，同时页面缺该
+                #         维度，且**全程只有一行无 WARN 的日志**，极易被误读为
+                #         「该样本确无此维度产出」。
+                #   实证（E1 10 样本 / 11 步缺口复核）：复跑 11 步有 **6 步**立刻
+                #         返回真实内容（含 s7 决策链、s4 事实判断）⇒ 空响应是
+                #         **传输层瞬时退化**，与超时同源，必须重试而非吞掉。
+                if not (r or "").strip():
+                    print("[llm] attempt %d 空响应(0 字) —— 计为重试，不返回"
+                          % (attempt + 1), flush=True)
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    print("WARN  连续 %d 次空响应，放弃该调用（返回空串）"
+                          % max_retries, flush=True)
+                    return ""
                 return r
             except urllib.error.HTTPError as e:
                 print("[llm] attempt %d HTTPError %s（耗时 %.0fs）"
@@ -206,6 +227,21 @@ class LLMClient:
                 # 提取 delta
                 choices = obj.get("choices", [])
                 if not choices:
+                    # D-78 (2026-09-17): MiniMax 的**业务级错误以 HTTP 200 + SSE 返回**,
+                    #   `choices` 为 null, 真实原因藏在 `base_resp` 里。实测原始报文:
+                    #     {"choices":null,"input_sensitive":true,"input_sensitive_type":1,
+                    #      "base_resp":{"status_code":1026,"status_msg":"input new_sensitive"}}
+                    #   原实现此处直接 `continue` ⇒ **错误被静默吞掉**: 上层只看到
+                    #   「返回 0 字」, 与真正的网络抖动无法区分 ⇒ 复核时误判为
+                    #   「瞬时中断, 重跑即可」, 该样本的缺口从而长期无法定位。
+                    #   现在显式抛出带 payload 的错误, 交给外层既有的重试/日志链路。
+                    br = obj.get("base_resp") or {}
+                    if br.get("status_code") not in (None, 0):
+                        raise RuntimeError(
+                            "LLM 服务端拒绝: base_resp.status_code=%s status_msg=%r "
+                            "input_sensitive=%s output_sensitive=%s"
+                            % (br.get("status_code"), br.get("status_msg"),
+                               obj.get("input_sensitive"), obj.get("output_sensitive")))
                     continue
                 delta = choices[0].get("delta", {})
                 rc = delta.get("reasoning_content", "")
@@ -224,7 +260,11 @@ class LLMClient:
                 pass
         except urllib.error.HTTPError as e:
             _heartbeat("http_error", f"code={e.code}")
-            if e.code == 429 and e.code >= 500:
+            # D-78 附带修正: 原条件 `e.code == 429 and e.code >= 500` **恒假**
+            #   (同一状态码不可能既是 429 又 ≥500) ⇒ 429 限流与 5xx 服务端错误
+            #   从未触发外层重试, 一律被降级为「返回空串」, 与「模型返回空」
+            #   混为一谈。改为 `or` 后行为与函数开头 docstring 声明一致。
+            if e.code == 429 or e.code >= 500:
                 raise  # 触发外层重试
             print(f"WARN  LLM HTTP 错误: {e.code} {e.reason}")
             return ""
@@ -405,4 +445,45 @@ def safe_json_parse(content: str, default=None) -> dict:
             except json.JSONDecodeError:
                 continue
 
+    # ★ 原先静默兜底 ⇒ 把「解析失败」伪装成「确无产出」：
+    #   下游 fuse_check 见到「全字段空/占位」就软熔断不落盘，
+    #   体检里表现为 C1/C2 永不清零（2026-09-16 实测 s7 返回 8180 字
+    #   却全字段空）。必须让失败可见，否则永远查不到真因。
+    sys.stderr.write(
+        "[WARN] JSON 解析失败：len=%d，首段=%.160r —— 已返回兜底值；"
+        "若该步随后被软熔断，应视为**解析失败**而非无产出\n"
+        % (len(content), content[:160]))
+    sys.stderr.flush()
     return default if default is not None else {}
+
+
+def as_dict(parsed, default=None) -> dict:
+    """把 `safe_json_parse` 的返回**归一为 dict**（按键访问前的前置动作）。
+
+    背景（D-70，2026-09-16 实测）：`safe_json_parse` 在模型用**数组包裹**输出时会
+    返回 `list`（其 docstring 明确「支持返回 dict 或 list」），而 s3/s6/s7/s9/s10
+    随后按**键**写入（如 `parsed["quantitative_params"] = []`）⇒
+    `TypeError: list indices must be integers or slices, not str`。
+    实测仅在**最长样本**（41,148 字，全库最大）触发 —— 输出越长，模型越易退化成
+    「数组包裹对象」形态。此缺陷会把一个纯解析/形态问题伪装成「该步异常」。
+
+    归一规则：dict 原样 · list ⇒ 首个 dict 元素 · 其它 ⇒ default（dict）或 {}。
+
+    ⚠ `s13`/`s14` **刻意不用本函数** —— 它们的设计就是「模型给裸数组 ⇒ 直接当
+      items/scenarios 用」，归一为 dict 会抹掉该分支（见 s13 内注释）。
+    """
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        for x in parsed:
+            if isinstance(x, dict):
+                return x
+    return dict(default) if isinstance(default, dict) else {}
+
+
+def safe_json_dict(content: str, default=None) -> dict:
+    """`as_dict(safe_json_parse(...))` 的组合形式：解析 + 强制 dict 归一。
+
+    步骤代码请用本函数取代裸 `safe_json_parse` —— **一处归一，五步受益**。
+    """
+    return as_dict(safe_json_parse(content, default), default)

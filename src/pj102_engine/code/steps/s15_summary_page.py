@@ -234,12 +234,12 @@ def s15_summary_page(state: dict, cfg) -> dict:
     if naming_decision == "same_source":
         # 同源重跑: 择优覆盖 —— 新版不劣于旧版才落地, 否则保留既有版本 (防"重跑倒退")
         if _content_grade(rendered) >= prev_grade:
-            target.write_text(rendered, encoding="utf-8")
+            target.write_text(rendered, encoding="utf-8", newline="\n")
             naming_decision = "same_source_overwritten"
         else:
             naming_decision = "same_source_kept_old"
     else:
-        target.write_text(rendered, encoding="utf-8")
+        target.write_text(rendered, encoding="utf-8", newline="\n")
     return {
         "pages": [str(target)],
         "page": target.name,

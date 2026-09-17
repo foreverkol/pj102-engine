@@ -5,16 +5,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_client import LLMClient, safe_json_parse
+from llm_client import LLMClient, safe_json_dict
+from excerpt import excerpt_for_llm
 
 
 def s10_cognitive_refine(content: str, llm: LLMClient) -> dict:
     """LLM 认知提炼 + 数字人素材 + v7.0 ldamc 5 维"""
-    excerpt = content[:10000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 10000)
 
     prompt = f"""从以下会议内容提炼认知模式 + 数字人素材 + 【v7.0 创新】ldamc 5 维自检:
 
-会议内容(前 10000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【v7.0 ldamc 5 维自检 - 必填】
@@ -49,7 +50,7 @@ def s10_cognitive_refine(content: str, llm: LLMClient) -> dict:
 5. 只输出 JSON
 """
     result = llm.call(prompt, max_tokens=524288)  # v3.0 S10.2: 按官方上限 524288
-    parsed = safe_json_parse(result, {
+    parsed = safe_json_dict(result, {
         "cognitive_refinement": [],
         "digital_human_material": {},
         "ldamc": {

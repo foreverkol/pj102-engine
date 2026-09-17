@@ -37,8 +37,19 @@ class EntityResolver:
         # 显式传入优先；未传则按项目约定探测 <registry>/../../config/asr_alias.json。
         # 装载失败一律降级为空表 —— 引擎必须能在无该配置的环境（codex/hermes）跑通。
         if asr_alias_path is None:
-            _cand = self.registry_path.parent.parent / "config" / "asr_alias.json"
-            asr_alias_path = _cand if _cand.exists() else None
+            # D-62（2026-09-16 定性）：原约定路径 `<registry>/../../config/` 在部署仓
+            # 布局下解析为 `<root>/system/config/` —— **差一级**。探测失败 ⇒ 传入
+            # None ⇒ `load_asr_alias(None)` 返回**空表**（该函数设计上不抛异常，
+            # 只降级）⇒ ASR 音近错听映射在整个生产链路中**静默失效**：D-40/D-41
+            # 的全部成果只经一次性脚本（consolidate_asr_entities）落地，凡新样本
+            # 一律穿透为独立实体（实测 `海塑胶`/`深度` 仍被建成新 org）。
+            # 改为自 registry 逐级上溯探测 `<ancestor>/config/asr_alias.json`：
+            # 布局无关（部署仓与 src layout 均适用），找不到仍降级空表。
+            for _up in (self.registry_path.parent, *self.registry_path.parents):
+                _cand = _up / "config" / "asr_alias.json"
+                if _cand.is_file():
+                    asr_alias_path = _cand
+                    break
         try:
             from asr_alias import load_asr_alias
             self.asr_alias = load_asr_alias(asr_alias_path)

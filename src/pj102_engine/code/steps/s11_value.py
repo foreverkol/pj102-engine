@@ -10,11 +10,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 def s11_value_rating(content: str, llm: LLMClient) -> dict:
     """LLM 价值评级"""
-    excerpt = content[:4000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 4000)
 
     prompt = f"""为会议做价值评级，输出 JSON：
 

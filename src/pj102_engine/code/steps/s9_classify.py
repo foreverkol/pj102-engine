@@ -5,16 +5,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_client import LLMClient, safe_json_parse
+from llm_client import LLMClient, safe_json_dict
+from excerpt import excerpt_for_llm
 
 
 def s9_knowledge_classify(content: str, llm: LLMClient) -> dict:
     """LLM 知识归类 + 复用场景 + v6.1 可转化资产 tag 5 类"""
-    excerpt = content[:8000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 8000)
 
     prompt = f"""根据会议内容,做知识归类,输出 JSON:
 
-会议内容(前 8000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【v3.0 输出格式】
@@ -65,7 +66,7 @@ def s9_knowledge_classify(content: str, llm: LLMClient) -> dict:
 5. 只输出 JSON
 """
     result = llm.call(prompt, max_tokens=524288)  # v3.0 S10.2: 按官方上限 524288
-    parsed = safe_json_parse(result, {
+    parsed = safe_json_dict(result, {
         "knowledge_type": "general",
         "tags": [],
         "reuse_scenarios": [],

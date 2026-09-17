@@ -110,7 +110,7 @@ def write_scenarios(scenarios: List[dict], wiki_root: Path,
 
         md = scenario_to_md(scen, source_ref=source_ref,
                            meeting_date=meeting_date)
-        out.write_text(md, encoding="utf-8")
+        out.write_text(md, encoding="utf-8", newline="\n")
         written.append(out)
 
     return written

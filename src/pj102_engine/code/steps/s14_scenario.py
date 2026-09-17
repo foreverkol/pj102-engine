@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 SCENARIO_FIELDS = [
@@ -33,11 +34,11 @@ def s14_scenario(content: str, llm: LLMClient) -> list:
     Returns:
         [{theme, customer, ..., failure_modes}, ...]
     """
-    excerpt = content[:10000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 10000)
 
     prompt = f"""分析以下会议内容,识别是否存在"商业模式片段"(scenario)。
 
-会议内容(前 10000 字):
+会议内容(前 {EXCERPT_LIMIT} 字):
 {excerpt}
 
 【11 字段定义 - 必须填全】

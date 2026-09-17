@@ -257,11 +257,11 @@ def append_log_md(entries: List[Dict], wiki_root: Path, version: str,
     lines.append(f"- 版本: {version}")
 
     if log_path.exists():
-        with open(log_path, "a", encoding="utf-8") as f:
+        with open(log_path, "a", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
     else:
         log_path.write_text("# PJ-102 知识库操作日志\n" + "\n".join(lines) + "\n",
-                            encoding="utf-8")
+                            encoding="utf-8", newline="\n")
 
 
 def build_index(cfg: AppConfig = None, action: str = "index_builder") -> dict:
@@ -284,7 +284,7 @@ def build_index(cfg: AppConfig = None, action: str = "index_builder") -> dict:
     # 生成 index.md
     index_content = build_index_md(entries, wiki_root, cfg.version)
     index_path = wiki_root / "index.md"
-    index_path.write_text(index_content, encoding="utf-8")
+    index_path.write_text(index_content, encoding="utf-8", newline="\n")
     log.info(f"生成主索引: {index_path} ({len(entries)} 条目)", step="index_builder")
 
     # 追加 log.md

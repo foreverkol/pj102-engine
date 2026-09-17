@@ -181,7 +181,7 @@ def merge_concept(concept_name: str, concept_files: List[Path],
     fm_yaml = yaml.dump(fm, allow_unicode=True, default_flow_style=False, sort_keys=False)
     md_content = f"---\n{fm_yaml}---\n\n{merged_body}\n"
 
-    merged_path.write_text(md_content, encoding="utf-8")
+    merged_path.write_text(md_content, encoding="utf-8", newline="\n")
     log.info(f"合并概念「{concept_name}」: {len(concept_files)} → 1 "
              f"({merged_path.name})", step="concept_merger")
 

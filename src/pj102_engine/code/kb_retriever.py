@@ -517,7 +517,7 @@ def write_query_page(result: Dict, wiki_root) -> Optional[Path]:
     while target.exists():
         target = out_dir / f"Query_{today}_{topic}（{n}）.md"
         n += 1
-    target.write_text("\n".join(lines), encoding="utf-8")
+    target.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     return target
 
 

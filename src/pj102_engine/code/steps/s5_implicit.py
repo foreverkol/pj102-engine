@@ -9,11 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import LLMClient, safe_json_parse
+from excerpt import excerpt_for_llm
 
 
 def s5_implicit_knowledge(content: str, llm: LLMClient) -> dict:
     """3 次子调用：体验性/判断性/关系性"""
-    excerpt = content[:6000]
+    excerpt, EXCERPT_LIMIT = excerpt_for_llm(content, 6000)
 
     # 5.1 体验性
     p1 = f"""从会议中提取主理人的"体验性隐性知识"（亲身经历、案例、踩过的坑）：

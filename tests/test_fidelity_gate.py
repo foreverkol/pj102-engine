@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+# 兼容两种布局：实例仓 <root>/code · 引擎仓 <root>/src/pj102_engine/code
+if not (ROOT / "code").exists() and (ROOT / "src" / "pj102_engine" / "code").exists():
+    ROOT = ROOT / "src" / "pj102_engine"
 sys.path.insert(0, str(ROOT / "code"))
 
 from fidelity_gate import (  # noqa: E402
